@@ -1,0 +1,21 @@
+version: 0.2
+
+phases:
+  pre_build:
+    commands:
+      - echo Logging in to Amazon ECR...
+      - aws ecr get-login-password --region $AWS_DEFAULT_REGION | docker login --username AWS --password-stdin <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com
+  build:
+    commands:
+      - echo Building the Docker image...
+      - docker build -t simple-webpage .
+      - docker tag simple-webpage:latest <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/simple-webpage:latest
+  post_build:
+    commands:
+      - echo Pushing the Docker image to ECR...
+      - docker push <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/simple-webpage:latest
+      - echo Writing image definitions file...
+      - printf '[{"name":"simple-webpage","imageUri":"%s"}]' <ACCOUNT_ID>.dkr.ecr.<REGION>.amazonaws.com/simple-webpage:latest > imagedefinitions.json
+
+artifacts:
+  files: imagedefinitions.json
