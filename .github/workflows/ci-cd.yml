@@ -1,77 +1,64 @@
-name: Build → Push → Deploy (ECS EC2 Free Tier)
+name: Deploy ECS EC2 via CloudFormation
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
 
 permissions:
-  id-token: write          # OIDC
-  contents:  read
-
-env:
-  AWS_REGION:   ${{ secrets.AWS_REGION }}
-  ECR_REPO:     ${{ secrets.ECR_REPO }}
-  STACK_NAME:   ${{ secrets.STACK_NAME }}
+  id-token: write
+  contents: read
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      ECR_REPO: ${{ secrets.ECR_REPO }}
+      STACK_NAME: ${{ secrets.STACK_NAME }}
 
     steps:
-    # ─────────────────────────────────────────────────────────────
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-    # ── Assume IAM role via OIDC ────────────────────────────────
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region:     ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
 
-    # ── Build & push image to **ECR** ───────────────────────────
-    - name: Build, tag and push image to ECR
-      id: buildpush
-      run: |
-        # 1. Ensure the repo exists (create if not)
-        ECR_URI=$(aws ecr describe-repositories \
-                    --repository-names "$ECR_REPO" \
-                    --query 'repositories[0].repositoryUri' \
-                    --output text 2>/dev/null || \
-                  aws ecr create-repository \
-                    --repository-name "$ECR_REPO" \
-                    --query 'repository.repositoryUri' \
-                    --output text)
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
 
-        echo "ECR_URI is $ECR_URI"
+      - name: Build, Tag, Push Docker Image
+        run: |
+          IMAGE_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
+          docker build -t $IMAGE_URI .
+          aws ecr describe-repositories --repository-names "$ECR_REPO" || \
+            aws ecr create-repository --repository-name "$ECR_REPO"
+          docker push $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
 
-        IMAGE_URI="$ECR_URI:latest"
-
-        # 2. Docker login to that registry
-        aws ecr get-login-password | \
-          docker login --username AWS --password-stdin "$ECR_URI"
-
-        # 3. Build & push
-        docker build -t "$IMAGE_URI" .
-        docker push "$IMAGE_URI"
-
-        # 4. Export for later steps
-        echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
-
-    # ── Deploy / update CloudFormation stack ────────────────────
-    - name: Deploy CloudFormation stack (EC2 launch)
-      run: |
-        aws cloudformation deploy \
-          --stack-name   "$STACK_NAME" \
-          --template-file infra/ecs.yml \
-          --capabilities CAPABILITY_NAMED_IAM \
-          --parameter-overrides ImageUrl="$IMAGE_URI"
-
-    # ── Show the public URL ─────────────────────────────────────
-    - name: Print site URL
-      run: |
-        URL=$(aws cloudformation describe-stacks \
-                --stack-name "$STACK_NAME" \
-                --query 'Stacks[0].Outputs[?OutputKey==`SiteURL`].OutputValue' \
-                --output text)
-        echo "✅ Deployed → $URL"
+      - name: Deploy CloudFormation stack
+        run: |
+          echo "Deploying CloudFormation stack..."
+          set +e  # Don't exit on failure so we can debug
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file infra/ecs.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides ImageUrl="$IMAGE_URI"
+          DEPLOY_EXIT_CODE=$?
+          if [ $DEPLOY_EXIT_CODE -ne 0 ]; then
+            echo "⚠️ CloudFormation deploy failed. Fetching failure events..."
+            aws cloudformation describe-stack-events --stack-name "$STACK_NAME" \
+              --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`ROLLBACK_IN_PROGRESS` || ResourceStatus==`ROLLBACK_FAILED`].[ResourceType, LogicalResourceId, ResourceStatusReason]' \
+              --output table
+            exit $DEPLOY_EXIT_CODE
+          else
+            echo "✅ CloudFormation stack deployed successfully."
+          fi
