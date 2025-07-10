@@ -1,24 +1,24 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS EC2 launch stack for static HTML with ALB (Free Tier friendly)
+Description: ECS (EC2 launch type) stack for a static HTML site – Free-Tier friendly.
 
 Parameters:
   ImageUrl:
     Type: String
-    Description: Docker image URI from ECR (e.g., 5901xxx.dkr.ecr.region.amazonaws.com/repo:latest)
+    Description: Full ECR image URI for the Nginx-HTML container.
 
 Mappings:
+  # Update AMI IDs if you deploy outside us-east-1
   RegionToAMI:
-    us-east-1: { AMI: ami-02d55cb47e83a99a4 }  # Amazon Linux 2 AMI (update if needed)
+    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 x86_64
 
 Resources:
-
+  # ── Networking ───────────────────────────────────────────────
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: html-ecs-vpc }]
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
@@ -39,7 +39,7 @@ Resources:
   IGW:
     Type: AWS::EC2::InternetGateway
 
-  IGWAttach:
+  AttachIGW:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
@@ -52,29 +52,30 @@ Resources:
 
   DefaultRoute:
     Type: AWS::EC2::Route
-    DependsOn: IGWAttach
+    DependsOn: AttachIGW
     Properties:
       RouteTableId: !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref IGW
 
-  SubnetRouteAssocA:
+  AssocA:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: !Ref RouteTable
       SubnetId: !Ref PublicSubnetA
 
-  SubnetRouteAssocB:
+  AssocB:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: !Ref RouteTable
       SubnetId: !Ref PublicSubnetB
 
+  # ── Security groups ──────────────────────────────────────────
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP to ALB
       VpcId: !Ref VPC
+      GroupDescription: Allow HTTP from the internet
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -84,14 +85,15 @@ Resources:
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow ALB to ECS Host
       VpcId: !Ref VPC
+      GroupDescription: Allow ALB → ECS host on port 80
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
+  # ── ECS Cluster & EC2 capacity ───────────────────────────────
   Cluster:
     Type: AWS::ECS::Cluster
 
@@ -116,8 +118,8 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        InstanceType: t2.micro
-        ImageId: !FindInMap [RegionToAMI, !Ref "AWS::Region", AMI]
+        ImageId: !FindInMap [RegionToAMI, !Ref 'AWS::Region', AMI]
+        InstanceType: t2.micro           # Free-Tier
         IamInstanceProfile:
           Arn: !Ref ECSInstanceProfile
         SecurityGroupIds: [!Ref EC2SecurityGroup]
@@ -125,7 +127,7 @@ Resources:
           Fn::Base64: !Sub |
             #!/bin/bash
             echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
-            yum install -y aws-cli
+            yum -y update
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -138,6 +140,7 @@ Resources:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
 
+  # ── Task & Service ───────────────────────────────────────────
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -149,14 +152,16 @@ Resources:
           Image: !Ref ImageUrl
           PortMappings:
             - ContainerPort: 80
+          Memory: 256          # ← REQUIRED memory field
 
+  # ── Load Balancer ────────────────────────────────────────────
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
       Scheme: internet-facing
+      Type: application
       Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
       SecurityGroups: [!Ref ALBSecurityGroup]
-      Type: application
 
   TargetGroup:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
@@ -192,5 +197,5 @@ Resources:
 
 Outputs:
   SiteURL:
-    Description: Public URL of the HTML app
+    Description: Public URL of the deployed HTML site
     Value: !Sub 'http://${LoadBalancer.DNSName}'
