@@ -1,0 +1,56 @@
+Parameters:
+  ImageTag:
+    Type: String
+    Default: latest
+  EcrRepo:
+    Type: String
+Resources:
+  Cluster:
+    Type: AWS::ECS::Cluster
+
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: { Service: ecs-tasks.amazonaws.com }
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      Family: html-app
+      RequiresCompatibilities: [FARGATE]
+      Cpu: 256
+      Memory: 512
+      NetworkMode: awsvpc
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: html
+          Image: !Sub "${EcrRepo}:${ImageTag}"
+          PortMappings:
+            - ContainerPort: 80
+          Essential: true
+
+  Service:
+    Type: AWS::ECS::Service
+    DependsOn: LoadBalancerListener
+    Properties:
+      Cluster: !Ref Cluster
+      LaunchType: FARGATE
+      DesiredCount: 1
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!ImportValue PubSubnetAId, !ImportValue PubSubnetBId]
+          SecurityGroups: [!Ref ServiceSG]
+      LoadBalancers:
+        - TargetGroupArn: !Ref TargetGroup
+          ContainerName: html
+          ContainerPort: 80
+      DeploymentController:
+        Type: CODE_DEPLOY
