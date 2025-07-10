@@ -1,11 +1,12 @@
 name: Destroy ECS EC2 Stack
+
 on:
-  workflow_dispatch:           # runs only when triggered manually
+  workflow_dispatch:
     inputs:
       stack_to_delete:
-        description: 'CloudFormation stack name'
-        required: false
-        default: ${{ vars.STACK_NAME }}
+        description: CloudFormation stack name
+        required: false        # ← optional
+        default: ""            # ← leave blank so we can fall back to secret
 
 permissions:
   id-token: write
@@ -16,16 +17,19 @@ jobs:
     runs-on: ubuntu-latest
     env:
       AWS_REGION:  ${{ secrets.AWS_REGION }}
-      STACK_NAME:  ${{ github.event.inputs.stack_to_delete }}
+      # Use the UI input if provided, otherwise fall back to the secret
+      STACK_NAME:  ${{ github.event.inputs.stack_to_delete != '' && github.event.inputs.stack_to_delete || secrets.STACK_NAME }}
       ECR_REPO:    ${{ secrets.ECR_REPO }}
 
     steps:
-      - name: Configure AWS credentials (OIDC)
+      # ── Assume role via OIDC ───────────────────────────────────
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
+      # ── Delete CloudFormation stack ───────────────────────────
       - name: Delete CloudFormation stack
         run: |
           echo "Deleting stack $STACK_NAME ..."
@@ -34,9 +38,9 @@ jobs:
           aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
           echo "✅ CloudFormation stack deleted."
 
-      # Optional – clean up the ECR repo to dodge storage charges
+      # ── Optional: delete ECR repo (to avoid storage charges) ──
       - name: Delete ECR repository (if empty)
         run: |
-          set +e
-          aws ecr delete-repository --repository-name "$ECR_REPO" --force
-          echo "Deleted ECR repository $ECR_REPO (if it existed)."
+          echo "Attempting to delete ECR repo $ECR_REPO ..."
+          aws ecr delete-repository --repository-name "$ECR_REPO" --force || true
+          echo "Done."
