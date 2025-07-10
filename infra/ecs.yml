@@ -1,11 +1,29 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Fargate deployment for static HTML site
+Description: >
+  Free-Tier ECS (EC2 launch type) stack for a static HTML site.
+  - 1× t2.micro EC2 container host (Free Tier)
+  - ECS cluster + service
+  - ALB front-end with HTTP (port 80)
+  - ECR image URI passed in from GitHub Actions (ImageUrl parameter)
 
+# ────────────────────────────────────────────────────────────────
 Parameters:
   ImageUrl:
     Type: String
-    Description: Docker image URI pushed to ECR (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-html-site:latest)
+    Description: Full ECR image URI to deploy
+  KeyPairName:
+    Type: AWS::EC2::KeyPair::KeyName
+    Description: Optional – EC2 key pair if you want SSH access
+    Default: ""
 
+# ────────────────────────────────────────────────────────────────
+Mappings:
+  # Choose the smallest burstable instance in each region (t3.micro if available)
+  RegionToAMI:
+    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 x86_64 (update if needed)
+    us-west-2: { AMI: ami-08962a4068733a2b6 }
+
+# ────────────────────────────────────────────────────────────────
 Resources:
 
   VPC:
@@ -14,64 +32,64 @@ Resources:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: html-app-vpc }]
+      Tags: [{ Key: Name, Value: html-free-vpc }]
 
-  Subnet1:
+  PublicSubnetA:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: public-subnet-1 }]
+      Tags: [{ Key: Name, Value: subnet-a }]
 
-  Subnet2:
+  PublicSubnetB:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [ 1, !GetAZs '' ]
+      AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: public-subnet-2 }]
+      Tags: [{ Key: Name, Value: subnet-b }]
 
-  InternetGateway:
+  IGW:
     Type: AWS::EC2::InternetGateway
 
-  AttachGateway:
+  IGWAttach:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
       VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
+      InternetGatewayId: !Ref IGW
 
   RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
 
-  Route:
+  DefaultRoute:
     Type: AWS::EC2::Route
-    DependsOn: AttachGateway
+    DependsOn: IGWAttach
     Properties:
       RouteTableId: !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
+      GatewayId: !Ref IGW
 
-  RouteTableAssoc1:
+  SubnetRouteAssocA:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: !Ref RouteTable
-      SubnetId: !Ref Subnet1
+      SubnetId: !Ref PublicSubnetA
 
-  RouteTableAssoc2:
+  SubnetRouteAssocB:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       RouteTableId: !Ref RouteTable
-      SubnetId: !Ref Subnet2
+      SubnetId: !Ref PublicSubnetB
 
-  SecurityGroup:
+  ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow HTTP inbound
+      GroupDescription: ALB HTTP access
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -79,42 +97,95 @@ Resources:
           ToPort: 80
           CidrIp: 0.0.0.0/0
 
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow inbound from ALB
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !Ref ALBSecurityGroup
+
+  # ── ECS Cluster ───────────────────────────────────────────────
   Cluster:
     Type: AWS::ECS::Cluster
 
-  TaskExecutionRole:
+  # ── EC2 Container Instance (t2.micro) ─────────────────────────
+  ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
+            Principal: { Service: ec2.amazonaws.com }
             Action: sts:AssumeRole
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ECSInstanceRole]
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: t2.micro          # Free-Tier instance
+        ImageId: !FindInMap [RegionToAMI, !Ref "AWS::Region", AMI]
+        IamInstanceProfile:
+          Arn: !Ref ECSInstanceProfile
+        KeyName: !If
+          - HasKey
+          - !Ref KeyPairName
+          - !Ref "AWS::NoValue"
+        SecurityGroupIds: [!Ref EC2SecurityGroup]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
+            yum install -y aws-cli
+
+      TagSpecifications:
+        - ResourceType: instance
+          Tags: [{ Key: Name, Value: ecs-container-host }]
+
+  # Condition to handle optional key pair
+  Conditions:
+    HasKey: !Not [!Equals [!Ref KeyPairName, ""]]
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+
+  # ── Task + Service (EC2 launch type) ──────────────────────────
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Cpu: 256
-      Memory: 512
-      NetworkMode: awsvpc
-      RequiresCompatibilities: [FARGATE]
-      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      Family: html-on-ec2
+      NetworkMode: bridge
+      RequiresCompatibilities: [EC2]
       ContainerDefinitions:
-        - Name: html-container
+        - Name: html
           Image: !Ref ImageUrl
-          PortMappings:
-            - ContainerPort: 80
+          PortMappings: [{ ContainerPort: 80 }]
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
-      Subnets: [!Ref Subnet1, !Ref Subnet2]
-      SecurityGroups: [!Ref SecurityGroup]
       Scheme: internet-facing
+      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
+      SecurityGroups: [!Ref ALBSecurityGroup]
       Type: application
 
   TargetGroup:
@@ -123,10 +194,8 @@ Resources:
       VpcId: !Ref VPC
       Port: 80
       Protocol: HTTP
-      TargetType: ip
+      TargetType: instance
       HealthCheckPath: /
-      Matcher:
-        HttpCode: 200
 
   Listener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -143,20 +212,16 @@ Resources:
     DependsOn: Listener
     Properties:
       Cluster: !Ref Cluster
-      LaunchType: FARGATE
+      LaunchType: EC2
       DesiredCount: 1
       TaskDefinition: !Ref TaskDefinition
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          SecurityGroups: [!Ref SecurityGroup]
-          Subnets: [!Ref Subnet1, !Ref Subnet2]
       LoadBalancers:
-        - ContainerName: html-container
+        - ContainerName: html
           ContainerPort: 80
           TargetGroupArn: !Ref TargetGroup
 
+# ────────────────────────────────────────────────────────────────
 Outputs:
-  LoadBalancerDNS:
-    Description: Public URL of the HTML app
-    Value: !GetAtt LoadBalancer.DNSName
+  SiteURL:
+    Description: Public URL of your HTML site
+    Value: !Sub 'http://${LoadBalancer.DNSName}'
