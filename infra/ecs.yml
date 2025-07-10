@@ -1,29 +1,15 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Free-Tier ECS (EC2 launch type) stack for a static HTML site.
-  - 1× t2.micro EC2 container host (Free Tier)
-  - ECS cluster + service
-  - ALB front-end with HTTP (port 80)
-  - ECR image URI passed in from GitHub Actions (ImageUrl parameter)
+Description: ECS EC2 launch stack for static HTML with ALB (Free Tier friendly)
 
-# ────────────────────────────────────────────────────────────────
 Parameters:
   ImageUrl:
     Type: String
-    Description: Full ECR image URI to deploy
-  KeyPairName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: Optional – EC2 key pair if you want SSH access
-    Default: ""
+    Description: Docker image URI from ECR (e.g., 5901xxx.dkr.ecr.region.amazonaws.com/repo:latest)
 
-# ────────────────────────────────────────────────────────────────
 Mappings:
-  # Choose the smallest burstable instance in each region (t3.micro if available)
   RegionToAMI:
-    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 x86_64 (update if needed)
-    us-west-2: { AMI: ami-08962a4068733a2b6 }
+    us-east-1: { AMI: ami-02d55cb47e83a99a4 }  # Amazon Linux 2 AMI (update if needed)
 
-# ────────────────────────────────────────────────────────────────
 Resources:
 
   VPC:
@@ -32,7 +18,7 @@ Resources:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags: [{ Key: Name, Value: html-free-vpc }]
+      Tags: [{ Key: Name, Value: html-ecs-vpc }]
 
   PublicSubnetA:
     Type: AWS::EC2::Subnet
@@ -41,7 +27,6 @@ Resources:
       CidrBlock: 10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: subnet-a }]
 
   PublicSubnetB:
     Type: AWS::EC2::Subnet
@@ -50,7 +35,6 @@ Resources:
       CidrBlock: 10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs '']
       MapPublicIpOnLaunch: true
-      Tags: [{ Key: Name, Value: subnet-b }]
 
   IGW:
     Type: AWS::EC2::InternetGateway
@@ -89,7 +73,7 @@ Resources:
   ALBSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: ALB HTTP access
+      GroupDescription: Allow HTTP to ALB
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -100,7 +84,7 @@ Resources:
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow inbound from ALB
+      GroupDescription: Allow ALB to ECS Host
       VpcId: !Ref VPC
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -108,11 +92,9 @@ Resources:
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
-  # ── ECS Cluster ───────────────────────────────────────────────
   Cluster:
     Type: AWS::ECS::Cluster
 
-  # ── EC2 Container Instance (t2.micro) ─────────────────────────
   ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
@@ -134,28 +116,16 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        InstanceType: t2.micro          # Free-Tier instance
+        InstanceType: t2.micro
         ImageId: !FindInMap [RegionToAMI, !Ref "AWS::Region", AMI]
         IamInstanceProfile:
           Arn: !Ref ECSInstanceProfile
-        KeyName: !If
-          - HasKey
-          - !Ref KeyPairName
-          - !Ref "AWS::NoValue"
         SecurityGroupIds: [!Ref EC2SecurityGroup]
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
             echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
             yum install -y aws-cli
-
-      TagSpecifications:
-        - ResourceType: instance
-          Tags: [{ Key: Name, Value: ecs-container-host }]
-
-  # Condition to handle optional key pair
-  Conditions:
-    HasKey: !Not [!Equals [!Ref KeyPairName, ""]]
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -168,17 +138,17 @@ Resources:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
 
-  # ── Task + Service (EC2 launch type) ──────────────────────────
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: html-on-ec2
+      Family: html-site-task
       NetworkMode: bridge
       RequiresCompatibilities: [EC2]
       ContainerDefinitions:
         - Name: html
           Image: !Ref ImageUrl
-          PortMappings: [{ ContainerPort: 80 }]
+          PortMappings:
+            - ContainerPort: 80
 
   LoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
@@ -220,8 +190,7 @@ Resources:
           ContainerPort: 80
           TargetGroupArn: !Ref TargetGroup
 
-# ────────────────────────────────────────────────────────────────
 Outputs:
   SiteURL:
-    Description: Public URL of your HTML site
+    Description: Public URL of the HTML app
     Value: !Sub 'http://${LoadBalancer.DNSName}'

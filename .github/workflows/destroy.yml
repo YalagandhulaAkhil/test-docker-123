@@ -1,0 +1,42 @@
+name: Destroy ECS EC2 Stack
+on:
+  workflow_dispatch:           # runs only when triggered manually
+    inputs:
+      stack_to_delete:
+        description: 'CloudFormation stack name'
+        required: false
+        default: ${{ vars.STACK_NAME }}
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  destroy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION:  ${{ secrets.AWS_REGION }}
+      STACK_NAME:  ${{ github.event.inputs.stack_to_delete }}
+      ECR_REPO:    ${{ secrets.ECR_REPO }}
+
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      - name: Delete CloudFormation stack
+        run: |
+          echo "Deleting stack $STACK_NAME ..."
+          aws cloudformation delete-stack --stack-name "$STACK_NAME"
+          echo "Waiting until it’s gone ..."
+          aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
+          echo "✅ CloudFormation stack deleted."
+
+      # Optional – clean up the ECR repo to dodge storage charges
+      - name: Delete ECR repository (if empty)
+        run: |
+          set +e
+          aws ecr delete-repository --repository-name "$ECR_REPO" --force
+          echo "Deleted ECR repository $ECR_REPO (if it existed)."
