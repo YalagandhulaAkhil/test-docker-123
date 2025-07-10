@@ -152,7 +152,7 @@ Resources:
           Image: !Ref ImageUrl
           PortMappings:
             - ContainerPort: 80
-          Memory: 256          # ← REQUIRED memory field
+          Memory:  512        # ← REQUIRED memory field
 
   # ── Load Balancer ────────────────────────────────────────────
   LoadBalancer:
