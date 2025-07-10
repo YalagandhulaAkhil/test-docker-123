@@ -1,0 +1,47 @@
+name: Deploy HTML to ECS
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      ECR_REPO: ${{ secrets.ECR_REPO }}
+      STACK_NAME: ${{ secrets.STACK_NAME }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and Push Docker image
+        run: |
+          IMAGE_URI="${{ secrets.ECR_REPO }}:latest"
+          docker build -t $IMAGE_URI .
+          aws ecr describe-repositories --repository-names ${{ secrets.ECR_REPO }} || \
+            aws ecr create-repository --repository-name ${{ secrets.ECR_REPO }}
+          docker push $IMAGE_URI
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy ECS via CloudFormation
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${{ secrets.STACK_NAME }} \
+            --template-file infra/ecs.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --parameter-overrides ImageUrl=${{ env.IMAGE_URI }}
