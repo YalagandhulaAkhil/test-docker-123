@@ -1,47 +1,77 @@
-name: Deploy HTML to ECS
+name: Build → Push → Deploy (ECS EC2 Free Tier)
 
 on:
   push:
     branches: [main]
 
 permissions:
-  id-token: write
-  contents: read
+  id-token: write          # OIDC
+  contents:  read
+
+env:
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  ECR_REPO:     ${{ secrets.ECR_REPO }}
+  STACK_NAME:   ${{ secrets.STACK_NAME }}
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      ECR_REPO: ${{ secrets.ECR_REPO }}
-      STACK_NAME: ${{ secrets.STACK_NAME }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    # ─────────────────────────────────────────────────────────────
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+    # ── Assume IAM role via OIDC ────────────────────────────────
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+    # ── Build & push image to **ECR** ───────────────────────────
+    - name: Build, tag and push image to ECR
+      id: buildpush
+      run: |
+        # 1. Ensure the repo exists (create if not)
+        ECR_URI=$(aws ecr describe-repositories \
+                    --repository-names "$ECR_REPO" \
+                    --query 'repositories[0].repositoryUri' \
+                    --output text 2>/dev/null || \
+                  aws ecr create-repository \
+                    --repository-name "$ECR_REPO" \
+                    --query 'repository.repositoryUri' \
+                    --output text)
 
-      - name: Build and Push Docker image
-        run: |
-          IMAGE_URI="${{ secrets.ECR_REPO }}:latest"
-          docker build -t $IMAGE_URI .
-          aws ecr describe-repositories --repository-names ${{ secrets.ECR_REPO }} || \
-            aws ecr create-repository --repository-name ${{ secrets.ECR_REPO }}
-          docker push $IMAGE_URI
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+        echo "ECR_URI is $ECR_URI"
 
-      - name: Deploy ECS via CloudFormation
-        run: |
-          aws cloudformation deploy \
-            --stack-name ${{ secrets.STACK_NAME }} \
-            --template-file infra/ecs.yml \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --parameter-overrides ImageUrl=${{ env.IMAGE_URI }}
+        IMAGE_URI="$ECR_URI:latest"
+
+        # 2. Docker login to that registry
+        aws ecr get-login-password | \
+          docker login --username AWS --password-stdin "$ECR_URI"
+
+        # 3. Build & push
+        docker build -t "$IMAGE_URI" .
+        docker push "$IMAGE_URI"
+
+        # 4. Export for later steps
+        echo "IMAGE_URI=$IMAGE_URI" >> "$GITHUB_ENV"
+
+    # ── Deploy / update CloudFormation stack ────────────────────
+    - name: Deploy CloudFormation stack (EC2 launch)
+      run: |
+        aws cloudformation deploy \
+          --stack-name   "$STACK_NAME" \
+          --template-file infra/ecs.yml \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --parameter-overrides ImageUrl="$IMAGE_URI"
+
+    # ── Show the public URL ─────────────────────────────────────
+    - name: Print site URL
+      run: |
+        URL=$(aws cloudformation describe-stacks \
+                --stack-name "$STACK_NAME" \
+                --query 'Stacks[0].Outputs[?OutputKey==`SiteURL`].OutputValue' \
+                --output text)
+        echo "✅ Deployed → $URL"
