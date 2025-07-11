@@ -1,18 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS (EC2 launch type) stack for a static HTML site – Free-Tier friendly.
+Description: Deploy static HTML site on ECS (EC2 launch) with 1 GiB container memory.
 
 Parameters:
   ImageUrl:
     Type: String
-    Description: Full ECR image URI for the Nginx-HTML container.
+    Description: Full ECR image URI (e.g. 5901…dkr.ecr.us-east-1.amazonaws.com/my-html:latest)
 
 Mappings:
-  # Update AMI IDs if you deploy outside us-east-1
+  # Update this AMI map if you deploy outside us-east-1
   RegionToAMI:
-    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 x86_64
+    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 (x86_64)
 
 Resources:
-  # ── Networking ───────────────────────────────────────────────
+  # ── VPC & subnets ────────────────────────────────────────────
   VPC:
     Type: AWS::EC2::VPC
     Properties:
@@ -75,7 +75,7 @@ Resources:
     Type: AWS::EC2::SecurityGroup
     Properties:
       VpcId: !Ref VPC
-      GroupDescription: Allow HTTP from the internet
+      GroupDescription: Allow HTTP from internet
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -93,7 +93,7 @@ Resources:
           ToPort: 80
           SourceSecurityGroupId: !Ref ALBSecurityGroup
 
-  # ── ECS Cluster & EC2 capacity ───────────────────────────────
+  # ── ECS cluster & capacity ───────────────────────────────────
   Cluster:
     Type: AWS::ECS::Cluster
 
@@ -119,7 +119,7 @@ Resources:
     Properties:
       LaunchTemplateData:
         ImageId: !FindInMap [RegionToAMI, !Ref 'AWS::Region', AMI]
-        InstanceType: t2.micro           # Free-Tier
+        InstanceType: t2.micro          # 1 vCPU, 1 GiB – Free Tier
         IamInstanceProfile:
           Arn: !Ref ECSInstanceProfile
         SecurityGroupIds: [!Ref EC2SecurityGroup]
@@ -140,19 +140,21 @@ Resources:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
 
-  # ── Task & Service ───────────────────────────────────────────
+  # ── Task definition (1 GiB memory, 0.5 vCPU) ────────────────
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: html-site-task
-      NetworkMode: bridge
       RequiresCompatibilities: [EC2]
+      Cpu: '512'               # 0.5 vCPU
+      Memory: '1024'           # 1 GiB (at task level)
+      NetworkMode: bridge
       ContainerDefinitions:
         - Name: html
           Image: !Ref ImageUrl
           PortMappings:
             - ContainerPort: 80
-          Memory:  512        # ← REQUIRED memory field
+          Memory: 1024         # 1 GiB for container
 
   # ── Load Balancer ────────────────────────────────────────────
   LoadBalancer:
@@ -197,5 +199,5 @@ Resources:
 
 Outputs:
   SiteURL:
-    Description: Public URL of the deployed HTML site
+    Description: Public URL of the site
     Value: !Sub 'http://${LoadBalancer.DNSName}'
