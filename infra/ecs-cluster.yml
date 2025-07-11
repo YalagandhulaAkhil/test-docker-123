@@ -1,68 +1,47 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Cluster with EC2 launch type and Capacity Provider
+Description: Phase 2 – ECS EC2 Launch Type with Docker Image Deployment
 
 Parameters:
-  ClusterName:
+  ImageUrl:
     Type: String
-    Default: my-ecs-cluster
-  InstanceType:
-    Type: String
-    Default: t3.micro
-  KeyName:
-    Type: AWS::EC2::KeyPair::KeyName
-    Description: SSH Key for EC2 access
-  DesiredCapacity:
-    Type: Number
-    Default: 1
-  MaxSize:
-    Type: Number
-    Default: 2
-  MinSize:
-    Type: Number
-    Default: 1
-  VpcCidr:
-    Type: String
-    Default: 10.0.0.0/16
-  SubnetCidr:
-    Type: String
-    Default: 10.0.1.0/24
+    Description: ECR Image URI (e.g., 123456789012.dkr.ecr.us-east-1.amazonaws.com/my-html-site:latest)
 
 Resources:
 
-  VPC:
+  MyVPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: !Ref VpcCidr
+      CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: ECS-VPC
+          Value: MyVPC
 
-  Subnet:
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref VPC
-      CidrBlock: !Ref SubnetCidr
+      VpcId: !Ref MyVPC
+      CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
       AvailabilityZone: !Select [0, !GetAZs '']
       Tags:
         - Key: Name
-          Value: ECS-Subnet
+          Value: PublicSubnet
 
-  IGW:
+  InternetGateway:
     Type: AWS::EC2::InternetGateway
 
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      InternetGatewayId: !Ref IGW
-      VpcId: !Ref VPC
+      VpcId: !Ref MyVPC
+      InternetGatewayId: !Ref InternetGateway
 
   RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref VPC
+      VpcId: !Ref MyVPC
 
   PublicRoute:
     Type: AWS::EC2::Route
@@ -70,33 +49,27 @@ Resources:
     Properties:
       RouteTableId: !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref IGW
+      GatewayId: !Ref InternetGateway
 
-  RouteTableAssociation:
+  SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref Subnet
+      SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref RouteTable
 
-  SecurityGroup:
+  ECSInstanceSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow SSH and HTTP
-      VpcId: !Ref VPC
+      GroupDescription: Enable inbound HTTP access
+      VpcId: !Ref MyVPC
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
+          FromPort: 8080
+          ToPort: 8080
           CidrIp: 0.0.0.0/0
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: !Ref ClusterName
+      Tags:
+        - Key: Name
+          Value: ECSSecurityGroup
 
   ECSInstanceRole:
     Type: AWS::IAM::Role
@@ -108,70 +81,85 @@ Resources:
             Principal:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
-      Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
-        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
 
   ECSInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      Path: /
       Roles: [!Ref ECSInstanceRole]
 
-  LaunchTemplate:
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: MyEC2ECSCluster
+
+  ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        InstanceType: !Ref InstanceType
-        KeyName: !Ref KeyName
+        InstanceType: t3.micro
         IamInstanceProfile:
           Name: !Ref ECSInstanceProfile
-        NetworkInterfaces:
-          - AssociatePublicIpAddress: true
-            DeviceIndex: 0
-            SubnetId: !Ref Subnet
-            Groups: [!Ref SecurityGroup]
+        ImageId: !Ref ECSAMI
+        SecurityGroupIds:
+          - !Ref ECSInstanceSecurityGroup
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
-            yum update -y
-            yum install -y aws-cfn-bootstrap
+            echo ECS_CLUSTER=MyEC2ECSCluster >> /etc/ecs/ecs.config
+      LaunchTemplateName: MyECSLaunchTemplate
 
-  AutoScalingGroup:
+  ECSAMI:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id
+
+  ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      MinSize: !Ref MinSize
-      MaxSize: !Ref MaxSize
-      DesiredCapacity: !Ref DesiredCapacity
-      VPCZoneIdentifier: [!Ref Subnet]
+      VPCZoneIdentifier:
+        - !Ref PublicSubnet
+      MinSize: '1'
+      MaxSize: '1'
+      DesiredCapacity: '1'
       LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
 
-  CapacityProvider:
-    Type: AWS::ECS::CapacityProvider
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
     Properties:
-      Name: EC2CapacityProvider
-      AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref AutoScalingGroup
-        ManagedScaling:
-          Status: ENABLED
-          TargetCapacity: 100
-        ManagedTerminationProtection: DISABLED
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
-  ClusterCapacityProviderAssociation:
-    Type: AWS::ECS::ClusterCapacityProviderAssociations
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+    Properties:
+      RequiresCompatibilities:
+        - EC2
+      Cpu: 512
+      Memory: 1024
+      NetworkMode: bridge
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
+      ContainerDefinitions:
+        - Name: html
+          Image: !Ref ImageUrl
+          Memory: 1024
+          PortMappings:
+            - ContainerPort: 8080
+
+  ECSService:
+    Type: AWS::ECS::Service
+    DependsOn: ECSAutoScalingGroup
     Properties:
       Cluster: !Ref ECSCluster
-      CapacityProviders: [!Ref CapacityProvider]
-      DefaultCapacityProviderStrategy:
-        - CapacityProvider: !Ref CapacityProvider
-          Weight: 1
-
-Outputs:
-  ECSCluster:
-    Value: !Ref ECSCluster
-  EC2Role:
-    Value: !Ref ECSInstanceRole
+      DesiredCount: 1
+      LaunchType: EC2
+      TaskDefinition: !Ref TaskDefinition

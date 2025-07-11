@@ -1,56 +1,47 @@
-name: Phase-1 – ECR repo & image push
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Phase 1 – Create ECR repository (and optional S3 bucket)
 
-on:
-  workflow_dispatch:       # run it manually (Actions ➞ Phase-1 ➞ Run)
+Parameters:
+  RepositoryName:
+    Type: String
+    Default: my-html-site
+    Description: Name of the ECR repository to create
 
-permissions:
-  id-token: write
-  contents: read
+Resources:
+  # ------------------------------------------------------------
+  # ECR repository (main Phase-1 resource)
+  # ------------------------------------------------------------
+  MyECRRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: !Ref RepositoryName
+      ImageScanningConfiguration:
+        scanOnPush: true
+      ImageTagMutability: MUTABLE
+      Tags:
+        - Key: Environment
+          Value: Dev
 
-env:                        # comes from your secrets screen-shot
-  AWS_REGION:   ${{ secrets.AWS_REGION }}
-  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-  REPO_NAME:    ${{ secrets.ECR_REPO }}       # e.g. my-html-site
-  STACK_NAME:   phase1-ecr-stack
+  # ------------------------------------------------------------
+  # OPTIONAL example S3 bucket (uses a proper string key)
+  # ------------------------------------------------------------
+  TrueBucket:                     # ← string key, not boolean
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Delete        # automatically removed with the stack
+    Properties:
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      Tags:
+        - Key: Environment
+          Value: Dev
 
-jobs:
-  build-push:
-    runs-on: ubuntu-latest
+Outputs:
+  RepositoryUri:
+    Description: URI of the ECR repository you will push images to
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName}"
 
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region:     ${{ env.AWS_REGION }}
-
-      # ── deploy Phase-1 stack ─────────────────────────────────
-      - name: Deploy Phase-1 ECR stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name ${STACK_NAME} \
-            --template-file infra/phase1-ecr.yml \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --parameter-overrides RepoName=${REPO_NAME}
-
-      # ── pull repo URI from stack output ─────────────────────
-      - name: Get repository URI
-        id: repo
-        run: |
-          URI=$(aws cloudformation describe-stacks \
-                  --stack-name ${STACK_NAME} \
-                  --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" \
-                  --output text)
-          echo "REPO_URI=$URI" >> "$GITHUB_ENV"
-          echo "Repository URI: $URI"
-
-      # ── login, build, push ──────────────────────────────────
-      - name: Build & push Docker image
-        run: |
-          aws ecr get-login-password | \
-            docker login --username AWS --password-stdin "$REPO_URI"
-          docker build -t ${REPO_NAME}:latest .
-          docker tag  ${REPO_NAME}:latest "${REPO_URI}:latest"
-          docker push "${REPO_URI}:latest"
+  BucketName:
+    Description: Name of the example S3 bucket (remove if not needed)
+    Value: !Ref TrueBucket
