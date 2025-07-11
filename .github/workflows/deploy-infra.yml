@@ -1,0 +1,50 @@
+name: Deploy AWS Infra (IAM + VPC)
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'infra/**.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    name: Deploy IAM and VPC Infrastructure
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region: ${{ secrets.AWS_REGION }}
+
+    - name: Deploy IAM Roles stack
+      run: |
+        aws cloudformation deploy \
+          --stack-name iam-roles \
+          --template-file infra/iam-roles.yml \
+          --capabilities CAPABILITY_NAMED_IAM
+
+    - name: Deploy VPC/Subnet/SecurityGroup stack
+      run: |
+        aws cloudformation deploy \
+          --stack-name vpc-subnet-sg \
+          --template-file infra/vpc-subnets-securitygroup.yml
+
+    - name: Show CloudFormation Outputs
+      run: |
+        for stack in iam-roles vpc-subnet-sg; do
+          echo "Outputs for $stack:"
+          aws cloudformation describe-stacks \
+            --stack-name $stack \
+            --query "Stacks[0].Outputs[*].[OutputKey,OutputValue]" \
+            --output table
+        done
