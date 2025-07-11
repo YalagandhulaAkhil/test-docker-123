@@ -1,56 +1,73 @@
-name: Phase-1 – ECR repo & image push
+name: Build → Push → Deploy (ECR + ECS Cluster)
 
 on:
-  workflow_dispatch:       # run it manually (Actions ➞ Phase-1 ➞ Run)
+  push:
+    branches: [main]             # run on every commit to main
+  workflow_dispatch:             # or run manually
 
 permissions:
   id-token: write
-  contents: read
+  contents:  read
 
-env:                        # comes from your secrets screen-shot
+env:                              # set once for convenience
   AWS_REGION:   ${{ secrets.AWS_REGION }}
   AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-  REPO_NAME:    ${{ secrets.ECR_REPO }}       # e.g. my-html-site
-  STACK_NAME:   phase1-ecr-stack
+  REPO_NAME:    ${{ secrets.ECR_REPO }}     # e.g. my-html-site
+  ECR_STACK:    phase1-ecr-stack
+  ECS_STACK:    phase2-ecs-cluster
+  CLUSTER_NAME: my-ecs-cluster
 
 jobs:
-  build-push:
+  build-push-deploy:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+    - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region:     ${{ env.AWS_REGION }}
+    # ── assume AWS role via OIDC ────────────────────────────────
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ env.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
 
-      # ── deploy Phase-1 stack ─────────────────────────────────
-      - name: Deploy Phase-1 ECR stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name ${STACK_NAME} \
-            --template-file infra/phase1-ecr.yml \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --parameter-overrides RepoName=${REPO_NAME}
+    # ── Phase 1: create / ensure ECR repo ──────────────────────
+    - name: Deploy Phase-1 ECR stack
+      run: |
+        aws cloudformation deploy \
+          --stack-name  "$ECR_STACK" \
+          --template-file infra/phase1-ecr.yml \
+          --parameter-overrides RepoName=$REPO_NAME
 
-      # ── pull repo URI from stack output ─────────────────────
-      - name: Get repository URI
-        id: repo
-        run: |
-          URI=$(aws cloudformation describe-stacks \
-                  --stack-name ${STACK_NAME} \
-                  --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" \
-                  --output text)
-          echo "REPO_URI=$URI" >> "$GITHUB_ENV"
-          echo "Repository URI: $URI"
+    - name: Get ECR repository URI
+      id: repo_uri
+      run: |
+        URI=$(aws cloudformation describe-stacks \
+                --stack-name "$ECR_STACK" \
+                --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" \
+                --output text)
+        echo "REPO_URI=$URI" >> "$GITHUB_ENV"
 
-      # ── login, build, push ──────────────────────────────────
-      - name: Build & push Docker image
-        run: |
-          aws ecr get-login-password | \
-            docker login --username AWS --password-stdin "$REPO_URI"
-          docker build -t ${REPO_NAME}:latest .
-          docker tag  ${REPO_NAME}:latest "${REPO_URI}:latest"
-          docker push "${REPO_URI}:latest"
+    - name: Login, build, push Docker image
+      run: |
+        aws ecr get-login-password | docker login --username AWS --password-stdin "$REPO_URI"
+        docker build -t "$REPO_NAME:latest" .
+        docker tag   "$REPO_NAME:latest" "$REPO_URI:latest"
+        docker push  "$REPO_URI:latest"
+        echo "IMAGE_URI=$REPO_URI:latest" >> "$GITHUB_ENV"
+
+    # ── Phase 2: deploy ECS cluster w/ EC2 capacity ────────────
+    - name: Deploy Phase-2 ECS cluster stack
+      run: |
+        aws cloudformation deploy \
+          --stack-name "$ECS_STACK" \
+          --template-file infra/ecs-cluster.yml \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --parameter-overrides \
+              ClusterName=$CLUSTER_NAME \
+              KeyName=${{ secrets.EC2_KEYPAIR }}
+
+    - name: Show cluster ARN
+      run: |
+        ARN=$(aws ecs describe-clusters --clusters $CLUSTER_NAME --query 'clusters[0].clusterArn' --output text)
+        echo "✅ ECS cluster ready → $ARN"
