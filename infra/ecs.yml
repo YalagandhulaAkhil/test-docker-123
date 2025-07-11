@@ -1,111 +1,76 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Deploy static HTML site on ECS (EC2 launch) with 1 GiB container memory.
+AWSTemplateFormatVersion: "2010-09-09"
+Description: ECS EC2 LaunchType - HTML Site Deployment
 
 Parameters:
   ImageUrl:
     Type: String
-    Description: Full ECR image URI (e.g. 5901…dkr.ecr.us-east-1.amazonaws.com/my-html:latest)
-
-Mappings:
-  # Update this AMI map if you deploy outside us-east-1
-  RegionToAMI:
-    us-east-1: { AMI: ami-02d55cb47e83a99a4 }   # Amazon Linux 2 (x86_64)
+    Description: ECR Image URI to deploy
 
 Resources:
-  # ── VPC & subnets ────────────────────────────────────────────
+
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: HtmlVpc
 
-  PublicSubnetA:
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+
+  AttachGateway:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicSubnet:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
-      AvailabilityZone: !Select [0, !GetAZs '']
       MapPublicIpOnLaunch: true
-
-  PublicSubnetB:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.2.0/24
-      AvailabilityZone: !Select [1, !GetAZs '']
-      MapPublicIpOnLaunch: true
-
-  IGW:
-    Type: AWS::EC2::InternetGateway
-
-  AttachIGW:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref IGW
+      AvailabilityZone: !Select [ 0, !GetAZs '' ]
+      Tags:
+        - Key: Name
+          Value: PublicSubnet
 
   RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
       VpcId: !Ref VPC
 
-  DefaultRoute:
+  PublicRoute:
     Type: AWS::EC2::Route
-    DependsOn: AttachIGW
+    DependsOn: AttachGateway
     Properties:
       RouteTableId: !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref IGW
+      GatewayId: !Ref InternetGateway
 
-  AssocA:
+  SubnetRouteTableAssociation:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
+      SubnetId: !Ref PublicSubnet
       RouteTableId: !Ref RouteTable
-      SubnetId: !Ref PublicSubnetA
 
-  AssocB:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      RouteTableId: !Ref RouteTable
-      SubnetId: !Ref PublicSubnetB
-
-  # ── Security groups ──────────────────────────────────────────
-  ALBSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref VPC
-      GroupDescription: Allow HTTP from internet
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-  EC2SecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref VPC
-      GroupDescription: Allow ALB → ECS host on port 80
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          SourceSecurityGroupId: !Ref ALBSecurityGroup
-
-  # ── ECS cluster & capacity ───────────────────────────────────
-  Cluster:
+  ECSCluster:
     Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: HtmlEcsCluster
 
   ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
-            Principal: { Service: ec2.amazonaws.com }
-            Action: sts:AssumeRole
+            Principal:
+              Service: [ec2.amazonaws.com]
+            Action: ["sts:AssumeRole"]
+      Path: /
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
@@ -118,86 +83,63 @@ Resources:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
-        ImageId: !FindInMap [RegionToAMI, !Ref 'AWS::Region', AMI]
-        InstanceType: t2.micro          # 1 vCPU, 1 GiB – Free Tier
+        ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 ECS-optimized AMI
+        InstanceType: t2.micro
         IamInstanceProfile:
-          Arn: !Ref ECSInstanceProfile
-        SecurityGroupIds: [!Ref EC2SecurityGroup]
+          Name: !Ref ECSInstanceProfile
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
-            yum -y update
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+      LaunchTemplateName: HtmlLaunchTemplate
 
-  AutoScalingGroup:
+  ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-      MinSize: '1'
-      MaxSize: '1'
-      DesiredCapacity: '1'
+      VPCZoneIdentifier: [!Ref PublicSubnet]
+      MinSize: "1"
+      MaxSize: "1"
+      DesiredCapacity: "1"
       LaunchTemplate:
         LaunchTemplateId: !Ref LaunchTemplate
         Version: !GetAtt LaunchTemplate.LatestVersionNumber
 
-  # ── Task definition (1 GiB memory, 0.5 vCPU) ────────────────
+  TaskExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: [ecs-tasks.amazonaws.com]
+            Action: ["sts:AssumeRole"]
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: html-site-task
-      RequiresCompatibilities: [EC2]
-      Cpu: '512'               # 0.5 vCPU
-      Memory: '1024'           # 1 GiB (at task level)
       NetworkMode: bridge
+      RequiresCompatibilities: [EC2]
+      Cpu: 512
+      Memory: 1024
+      ExecutionRoleArn: !Ref TaskExecutionRole
       ContainerDefinitions:
         - Name: html
           Image: !Ref ImageUrl
+          Memory: 1024       # 1 GB for container
+          Cpu: 512           # 512 units = 0.5 vCPU
           PortMappings:
             - ContainerPort: 80
-          Memory: 1024         # 1 GiB for container
 
-  # ── Load Balancer ────────────────────────────────────────────
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Scheme: internet-facing
-      Type: application
-      Subnets: [!Ref PublicSubnetA, !Ref PublicSubnetB]
-      SecurityGroups: [!Ref ALBSecurityGroup]
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      VpcId: !Ref VPC
-      Port: 80
-      Protocol: HTTP
-      TargetType: instance
-      HealthCheckPath: /
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-
-  Service:
+  ECSService:
     Type: AWS::ECS::Service
-    DependsOn: Listener
+    DependsOn: ECSAutoScalingGroup
     Properties:
-      Cluster: !Ref Cluster
+      Cluster: !Ref ECSCluster
       LaunchType: EC2
       DesiredCount: 1
       TaskDefinition: !Ref TaskDefinition
-      LoadBalancers:
-        - ContainerName: html
-          ContainerPort: 80
-          TargetGroupArn: !Ref TargetGroup
-
-Outputs:
-  SiteURL:
-    Description: Public URL of the site
-    Value: !Sub 'http://${LoadBalancer.DNSName}'
