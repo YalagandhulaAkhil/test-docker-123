@@ -1,20 +1,21 @@
-AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS EC2 LaunchType - HTML Site Deployment
+AWSTemplateFormatVersion: '2010-09-09'
+Description: ECS Cluster with EC2 Launch Type
 
 Parameters:
   ImageUrl:
     Type: String
-    Description: ECR Image URI to deploy
+    Description: Docker image URI for ECS Task
 
 Resources:
-
   VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
       Tags:
         - Key: Name
-          Value: HtmlVpc
+          Value: ECSVPC
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -31,10 +32,7 @@ Resources:
       VpcId: !Ref VPC
       CidrBlock: 10.0.1.0/24
       MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [ 0, !GetAZs '' ]
-      Tags:
-        - Key: Name
-          Value: PublicSubnet
+      AvailabilityZone: !Select [ 0, !GetAZs ]
 
   RouteTable:
     Type: AWS::EC2::RouteTable
@@ -58,88 +56,89 @@ Resources:
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
-      ClusterName: HtmlEcsCluster
+      ClusterName: ECS-EC2-Cluster
 
   ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: [ec2.amazonaws.com]
-            Action: ["sts:AssumeRole"]
-      Path: /
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
-  ECSInstanceProfile:
+  InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      Roles: [!Ref ECSInstanceRole]
+      Roles: [ !Ref ECSInstanceRole ]
 
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
+  EC2Instance:
+    Type: AWS::EC2::Instance
     Properties:
-      LaunchTemplateData:
-        ImageId: ami-0c02fb55956c7d316  # Amazon Linux 2 ECS-optimized AMI
-        InstanceType: t2.micro
-        IamInstanceProfile:
-          Name: !Ref ECSInstanceProfile
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
-      LaunchTemplateName: HtmlLaunchTemplate
+      ImageId: ami-0c2b8ca1dad447f8a # Amazon ECS-optimized AMI (update as needed)
+      InstanceType: t2.micro
+      IamInstanceProfile: !Ref InstanceProfile
+      NetworkInterfaces:
+        - AssociatePublicIpAddress: true
+          DeviceIndex: 0
+          SubnetId: !Ref PublicSubnet
+          GroupSet:
+            - !Ref InstanceSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          echo ECS_CLUSTER=ECS-EC2-Cluster >> /etc/ecs/ecs.config
 
-  ECSAutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
+  InstanceSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      VPCZoneIdentifier: [!Ref PublicSubnet]
-      MinSize: "1"
-      MaxSize: "1"
-      DesiredCapacity: "1"
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VpcId: !Ref VPC
+      GroupDescription: Allow HTTP access
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
 
   TaskExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
+        Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: [ecs-tasks.amazonaws.com]
-            Action: ["sts:AssumeRole"]
-      Path: /
+              Service: ecs-tasks.amazonaws.com
+            Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: html-site-task
-      NetworkMode: bridge
-      RequiresCompatibilities: [EC2]
+      Family: html-task
       Cpu: 512
       Memory: 1024
-      ExecutionRoleArn: !Ref TaskExecutionRole
+      NetworkMode: bridge
+      RequiresCompatibilities: [EC2]
+      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
       ContainerDefinitions:
         - Name: html
           Image: !Ref ImageUrl
-          Memory: 1024       # 1 GB for container
-          Cpu: 512           # 512 units = 0.5 vCPU
+          Memory: 1024
+          Cpu: 512
           PortMappings:
             - ContainerPort: 80
+              HostPort: 80
 
   ECSService:
     Type: AWS::ECS::Service
-    DependsOn: ECSAutoScalingGroup
     Properties:
       Cluster: !Ref ECSCluster
       LaunchType: EC2
-      DesiredCount: 1
       TaskDefinition: !Ref TaskDefinition
+      DesiredCount: 1
