@@ -1,10 +1,10 @@
-name: Destroy Phase-1 (ECR repo + stack)
+name: Destroy Phase-1 (stack + ECR repo)
 
 on:
   workflow_dispatch:
     inputs:
       repo_name:
-        description: "ECR repository name (leave blank to use secrets.ECR_REPO)"
+        description: "ECR repo to delete (leave blank to use secrets.ECR_REPO)"
         required: false
         default: ""
 
@@ -23,31 +23,43 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # ── Assume the OIDC role ───────────────────────────────────────
+      # ── OIDC auth ─────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ── Delete the Phase-1 stack, retry if DELETE_FAILED ───────────
-      - name: Delete Phase-1 stack (plus ECR cleanup if needed)
+      # ── Empty the ECR repo (if it exists) ────────────────────
+      - name: Empty ECR repository images
         run: |
           set -e
-          echo "🗑️  Deleting CloudFormation stack $STACK_NAME ..."
-          aws cloudformation delete-stack --stack-name "$STACK_NAME"
-
-          # First wait attempt
-          if aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"; then
-            echo "✅ Stack deleted successfully."
-            exit 0
+          echo "🔎 Checking for images in $REPO_NAME ..."
+          IMAGES=$(aws ecr list-images --repository-name "$REPO_NAME" --query 'imageIds' --output json 2>/dev/null || echo "[]")
+          if [ "$IMAGES" != "[]" ]; then
+            echo "🗑  Deleting images in $REPO_NAME ..."
+            aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids "$IMAGES" || true
+          else
+            echo "ℹ️  Repo empty or not found."
           fi
 
-          echo "⚠️  Stack stuck in DELETE_FAILED. Force-deleting ECR repo $REPO_NAME ..."
+      # ── Force-delete the repo (removes remaining images) ─────
+      - name: Delete ECR repository
+        run: |
+          echo "🗑  Deleting ECR repo $REPO_NAME (if it exists) ..."
           aws ecr delete-repository --repository-name "$REPO_NAME" --force || true
 
-          echo "🔄 Retrying stack deletion ..."
+      # ── Delete the CloudFormation stack (retry once) ─────────
+      - name: Delete Phase-1 stack
+        run: |
+          set -e
+          echo "🗑  Deleting CloudFormation stack $STACK_NAME ..."
+          aws cloudformation delete-stack --stack-name "$STACK_NAME"
+          if aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"; then
+            echo "✅ Stack deleted."
+            exit 0
+          fi
+          echo "⚠️  Stack stuck in DELETE_FAILED, retrying once ..."
           aws cloudformation delete-stack --stack-name "$STACK_NAME"
           aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
-
-          echo "✅ Phase-1 stack and ECR repo fully removed."
+          echo "✅ Stack deleted after retry."
