@@ -1,64 +1,56 @@
-name: Deploy ECS EC2 via CloudFormation
+name: Phase-1 – ECR repo & image push
 
 on:
-  push:
-    branches:
-      - main
+  workflow_dispatch:       # run it manually (Actions ➞ Phase-1 ➞ Run)
 
 permissions:
   id-token: write
   contents: read
 
+env:                        # comes from your secrets screen-shot
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  REPO_NAME:    ${{ secrets.ECR_REPO }}       # e.g. my-html-site
+  STACK_NAME:   phase1-ecr-stack
+
 jobs:
-  deploy:
+  build-push:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_DEFAULT_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
-      ECR_REPO: ${{ secrets.ECR_REPO }}
-      STACK_NAME: ${{ secrets.STACK_NAME }}
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Build, Tag, Push Docker Image
+      # ── deploy Phase-1 stack ─────────────────────────────────
+      - name: Deploy Phase-1 ECR stack
         run: |
-          IMAGE_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${AWS_REGION}.amazonaws.com/${ECR_REPO}:latest"
-          docker build -t $IMAGE_URI .
-          aws ecr describe-repositories --repository-names "$ECR_REPO" || \
-            aws ecr create-repository --repository-name "$ECR_REPO"
-          docker push $IMAGE_URI
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
-
-      - name: Deploy CloudFormation stack
-        run: |
-          echo "Deploying CloudFormation stack..."
-          set +e  # Don't exit on failure so we can debug
           aws cloudformation deploy \
-            --stack-name "$STACK_NAME" \
-            --template-file infra/ecs.yml \
+            --stack-name ${STACK_NAME} \
+            --template-file infra/phase1-ecr.yml \
             --capabilities CAPABILITY_NAMED_IAM \
-            --parameter-overrides ImageUrl="$IMAGE_URI"
-          DEPLOY_EXIT_CODE=$?
-          if [ $DEPLOY_EXIT_CODE -ne 0 ]; then
-            echo "⚠️ CloudFormation deploy failed. Fetching failure events..."
-            aws cloudformation describe-stack-events --stack-name "$STACK_NAME" \
-              --query 'StackEvents[?ResourceStatus==`CREATE_FAILED` || ResourceStatus==`ROLLBACK_IN_PROGRESS` || ResourceStatus==`ROLLBACK_FAILED`].[ResourceType, LogicalResourceId, ResourceStatusReason]' \
-              --output table
-            exit $DEPLOY_EXIT_CODE
-          else
-            echo "✅ CloudFormation stack deployed successfully."
-          fi
+            --parameter-overrides RepoName=${REPO_NAME}
+
+      # ── pull repo URI from stack output ─────────────────────
+      - name: Get repository URI
+        id: repo
+        run: |
+          URI=$(aws cloudformation describe-stacks \
+                  --stack-name ${STACK_NAME} \
+                  --query "Stacks[0].Outputs[?OutputKey=='RepositoryUri'].OutputValue" \
+                  --output text)
+          echo "REPO_URI=$URI" >> "$GITHUB_ENV"
+          echo "Repository URI: $URI"
+
+      # ── login, build, push ──────────────────────────────────
+      - name: Build & push Docker image
+        run: |
+          aws ecr get-login-password | \
+            docker login --username AWS --password-stdin "$REPO_URI"
+          docker build -t ${REPO_NAME}:latest .
+          docker tag  ${REPO_NAME}:latest "${REPO_URI}:latest"
+          docker push "${REPO_URI}:latest"

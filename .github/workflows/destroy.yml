@@ -1,46 +1,44 @@
-name: Destroy ECS EC2 Stack
+name: Destroy Phase-1 (ECR repo)
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:         # run it manually from the Actions tab
     inputs:
-      stack_to_delete:
-        description: CloudFormation stack name
-        required: false        # ← optional
-        default: ""            # ← leave blank so we can fall back to secret
+      repo_name:
+        description: "ECR repository to delete (default = secret ECR_REPO)"
+        required: false
+        default: ""
 
 permissions:
   id-token: write
   contents: read
 
+env:
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  STACK_NAME:   phase1-ecr-stack
+  REPO_NAME:    ${{ github.event.inputs.repo_name != '' && github.event.inputs.repo_name || secrets.ECR_REPO }}
+
 jobs:
-  destroy:
+  nuke:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION:  ${{ secrets.AWS_REGION }}
-      # Use the UI input if provided, otherwise fall back to the secret
-      STACK_NAME:  ${{ github.event.inputs.stack_to_delete != '' && github.event.inputs.stack_to_delete || secrets.STACK_NAME }}
-      ECR_REPO:    ${{ secrets.ECR_REPO }}
 
     steps:
-      # ── Assume role via OIDC ───────────────────────────────────
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ── Delete CloudFormation stack ───────────────────────────
       - name: Delete CloudFormation stack
         run: |
-          echo "Deleting stack $STACK_NAME ..."
-          aws cloudformation delete-stack --stack-name "$STACK_NAME"
-          echo "Waiting until it’s gone ..."
-          aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME"
-          echo "✅ CloudFormation stack deleted."
+          echo "🗑️  Deleting CFN stack ${STACK_NAME} …"
+          aws cloudformation delete-stack --stack-name "${STACK_NAME}"
+          aws cloudformation wait stack-delete-complete --stack-name "${STACK_NAME}"
+          echo "✅ Stack deleted."
 
-      # ── Optional: delete ECR repo (to avoid storage charges) ──
-      - name: Delete ECR repository (if empty)
+      - name: Delete ECR repository
         run: |
-          echo "Attempting to delete ECR repo $ECR_REPO ..."
-          aws ecr delete-repository --repository-name "$ECR_REPO" --force || true
-          echo "Done."
+          echo "🗑️  Deleting ECR repo ${REPO_NAME} (if it exists) …"
+          aws ecr delete-repository --repository-name "${REPO_NAME}" --force || \
+            echo "Repository not found; nothing to delete."
+          echo "✅ Done."

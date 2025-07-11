@@ -1,144 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: ECS Cluster with EC2 Launch Type
+Description: Phase-1 – create a private ECR repository for the HTML site
 
 Parameters:
-  ImageUrl:
+  RepoName:
     Type: String
-    Description: Docker image URI for ECS Task
+    Default: my-html-site          # change if you like
+    Description: Name of the ECR repository
 
 Resources:
-  VPC:
-    Type: AWS::EC2::VPC
+  HtmlRepo:
+    Type: AWS::ECR::Repository
     Properties:
-      CidrBlock: 10.0.0.0/16
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: ECSVPC
+      RepositoryName: !Ref RepoName
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: false
 
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
-
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
-    Properties:
-      VpcId: !Ref VPC
-      InternetGatewayId: !Ref InternetGateway
-
-  PublicSubnet:
-    Type: AWS::EC2::Subnet
-    Properties:
-      VpcId: !Ref VPC
-      CidrBlock: 10.0.1.0/24
-      MapPublicIpOnLaunch: true
-      AvailabilityZone: !Select [ 0, !GetAZs ]
-
-  RouteTable:
-    Type: AWS::EC2::RouteTable
-    Properties:
-      VpcId: !Ref VPC
-
-  PublicRoute:
-    Type: AWS::EC2::Route
-    DependsOn: AttachGateway
-    Properties:
-      RouteTableId: !Ref RouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
-
-  SubnetRouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet
-      RouteTableId: !Ref RouteTable
-
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: ECS-EC2-Cluster
-
-  ECSInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
-
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [ !Ref ECSInstanceRole ]
-
-  EC2Instance:
-    Type: AWS::EC2::Instance
-    Properties:
-      ImageId: ami-0c2b8ca1dad447f8a # Amazon ECS-optimized AMI (update as needed)
-      InstanceType: t2.micro
-      IamInstanceProfile: !Ref InstanceProfile
-      NetworkInterfaces:
-        - AssociatePublicIpAddress: true
-          DeviceIndex: 0
-          SubnetId: !Ref PublicSubnet
-          GroupSet:
-            - !Ref InstanceSecurityGroup
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          echo ECS_CLUSTER=ECS-EC2-Cluster >> /etc/ecs/ecs.config
-
-  InstanceSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref VPC
-      GroupDescription: Allow HTTP access
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-          CidrIp: 0.0.0.0/0
-
-  TaskExecutionRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ecs-tasks.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
-
-  TaskDefinition:
-    Type: AWS::ECS::TaskDefinition
-    Properties:
-      Family: html-task
-      Cpu: 512
-      Memory: 1024
-      NetworkMode: bridge
-      RequiresCompatibilities: [EC2]
-      ExecutionRoleArn: !GetAtt TaskExecutionRole.Arn
-      ContainerDefinitions:
-        - Name: html
-          Image: !Ref ImageUrl
-          Memory: 1024
-          Cpu: 512
-          PortMappings:
-            - ContainerPort: 80
-              HostPort: 80
-
-  ECSService:
-    Type: AWS::ECS::Service
-    Properties:
-      Cluster: !Ref ECSCluster
-      LaunchType: EC2
-      TaskDefinition: !Ref TaskDefinition
-      DesiredCount: 1
+Outputs:
+  RepositoryUri:
+    Value: !GetAtt HtmlRepo.RepositoryUri
+    Description: URI you’ll push the Docker image to
