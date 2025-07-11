@@ -1,59 +1,65 @@
-name: Deploy ECR & ECS Stack (Phase 1 & 2)
+name: CI-CD — Phase 1 (ECR) & Phase 2 (ECS EC2)
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main ]          # run on every push to main
+  workflow_dispatch:            # allow manual run
 
 permissions:
   id-token: write
-  contents: read
+  contents:  read
+
+env:
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  STACK_NAME_ECR:   ${{ secrets.STACK_NAME_ECR }}      # e.g. phase1-ecr-stack
+  STACK_NAME_ECS:   ${{ secrets.STACK_NAME_ECS }}      # e.g. phase2-ecs-stack
+  REPO_NAME:        ${{ secrets.REPO_NAME }}           # e.g. my-html-site
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
-      REPO_NAME: my-html-site
-      STACK_NAME_ECR: phase1-ecr-stack
-      STACK_NAME_ECS: phase2-ecs-stack
 
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
+    # ─────────────────────────────────────────────
+    - name: 📥 Checkout code
+      uses: actions/checkout@v4
 
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+    # ─────────────────────────────────────────────
+    - name: 🔐 Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Create ECR Repo if not exists
-        run: |
-          aws ecr describe-repositories --repository-names "$REPO_NAME" || \
-          aws ecr create-repository --repository-name "$REPO_NAME"
+    # ─────────────────────────────────────────────
+    - name: 🪪 Login to Amazon ECR
+      id: login-ecr
+      uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Log in to Amazon ECR
-        uses: aws-actions/amazon-ecr-login@v2
+    # ─────────────────────────────────────────────
+    - name: 🐳 Build & Push Docker image
+      env:
+        ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+        IMAGE_TAG:    latest
+      run: |
+        docker build -t $ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG .
+        docker push  $ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG
+        echo "IMAGE_URI=$ECR_REGISTRY/$REPO_NAME:$IMAGE_TAG" >> $GITHUB_ENV
 
-      - name: Build & Push Docker image
-        run: |
-          IMAGE_URI="${{ secrets.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${REPO_NAME}:latest"
-          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
-          docker build -t $IMAGE_URI .
-          docker push $IMAGE_URI
+    # ─────────────────────────────────────────────
+    - name: 🚀 Deploy Phase 1 – ECR stack
+      run: |
+        aws cloudformation deploy \
+          --template-file infra/phase1-ecr.yml \
+          --stack-name   "$STACK_NAME_ECR" \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --parameter-overrides RepoName=$REPO_NAME
 
-      - name: Deploy Phase 1 - ECR Stack
-        run: |
-          aws cloudformation deploy \
-            --template-file infra/phase1-ecr.yml \
-            --stack-name $STACK_NAME_ECR \
-            --capabilities CAPABILITY_NAMED_IAM
-
-      - name: Deploy Phase 2 - ECS EC2 Stack
-        run: |
-          aws cloudformation deploy \
-            --template-file infra/phase2-ecs.yml \
-            --stack-name $STACK_NAME_ECS \
-            --parameter-overrides ImageUrl=$IMAGE_URI \
-            --capabilities CAPABILITY_NAMED_IAM
+    # ─────────────────────────────────────────────
+    - name: 🚀 Deploy Phase 2 – ECS EC2 stack
+      run: |
+        aws cloudformation deploy \
+          --template-file infra/phase2-ecs.yml \
+          --stack-name   "$STACK_NAME_ECS" \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --parameter-overrides ImageUrl=$IMAGE_URI

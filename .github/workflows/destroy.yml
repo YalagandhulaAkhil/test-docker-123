@@ -1,63 +1,55 @@
-name: Destroy All Stacks
+name: Destroy Phase 1 & Phase 2 Stacks
 
 on:
   workflow_dispatch:
-    inputs:
-      stack_ecr:
-        description: "ECR Stack Name"
-        required: true
-        default: "phase1-ecr-stack"
-      stack_ecs:
-        description: "ECS Stack Name"
-        required: true
-        default: "phase2-ecs-stack"
-      repo_name:
-        description: "ECR Repo Name"
-        required: true
-        default: "my-html-site"
 
 permissions:
   id-token: write
-  contents: read
+  contents:  read
+
+env:
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  STACK_NAME_ECR:   ${{ secrets.STACK_NAME_ECR }}
+  STACK_NAME_ECS:   ${{ secrets.STACK_NAME_ECS }}
+  REPO_NAME:        ${{ secrets.REPO_NAME }}
 
 jobs:
   destroy:
     runs-on: ubuntu-latest
-    env:
-      AWS_REGION: ${{ secrets.AWS_REGION }}
-      AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
 
     steps:
-      - name: Configure AWS Credentials via OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ env.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+    # ─────────────────────────────────────────────
+    - name: 🔐 Configure AWS credentials (OIDC)
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
 
-      - name: Delete all images in ECR Repo
-        run: |
-          set +e
-          aws ecr list-images --repository-name ${{ github.event.inputs.repo_name }} --query 'imageIds[*]' --output json > images.json
-          if [[ $(jq length images.json) -gt 0 ]]; then
-            aws ecr batch-delete-image \
-              --repository-name ${{ github.event.inputs.repo_name }} \
-              --image-ids "$(cat images.json)"
-          fi
+    # ─────────────────────────────────────────────
+    - name: 🧹 Empty ECR repository images
+      run: |
+        echo "Listing images in $REPO_NAME …"
+        IDS=$(aws ecr list-images --repository-name "$REPO_NAME" --query 'imageIds' --output json 2>/dev/null || echo "[]")
+        if [[ "$IDS" != "[]" ]]; then
+          aws ecr batch-delete-image --repository-name "$REPO_NAME" --image-ids "$IDS"
+          echo "Images deleted."
+        else
+          echo "Repo already empty or not found."
+        fi
 
-      - name: Delete ECS Stack
-        run: |
-          echo "🗑️ Deleting ECS Stack: ${{ github.event.inputs.stack_ecs }}"
-          aws cloudformation delete-stack --stack-name "${{ github.event.inputs.stack_ecs }}"
-          aws cloudformation wait stack-delete-complete --stack-name "${{ github.event.inputs.stack_ecs }}"
-          echo "✅ ECS Stack deleted."
+    # ─────────────────────────────────────────────
+    - name: 🗑️ Delete ECS stack
+      run: |
+        aws cloudformation delete-stack --stack-name "$STACK_NAME_ECS"
+        aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME_ECS" || true
 
-      - name: Delete ECR Stack
-        run: |
-          echo "🗑️ Deleting ECR Stack: ${{ github.event.inputs.stack_ecr }}"
-          aws cloudformation delete-stack --stack-name "${{ github.event.inputs.stack_ecr }}"
-          aws cloudformation wait stack-delete-complete --stack-name "${{ github.event.inputs.stack_ecr }}"
-          echo "✅ ECR Stack deleted."
+    # ─────────────────────────────────────────────
+    - name: 🗑️ Delete ECR stack
+      run: |
+        aws cloudformation delete-stack --stack-name "$STACK_NAME_ECR"
+        aws cloudformation wait stack-delete-complete --stack-name "$STACK_NAME_ECR" || true
 
-      - name: Delete ECR Repo (optional)
-        run: |
-          aws ecr delete-repository --repository-name "${{ github.event.inputs.repo_name }}" --force || true
+    # ─────────────────────────────────────────────
+    - name: 🗑️ Delete ECR repository
+      run: |
+        aws ecr delete-repository --repository-name "$REPO_NAME" --force || true

@@ -1,47 +1,27 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Phase 1 – Create ECR repository (and optional S3 bucket)
+Description: >
+  Phase 1 - Create an Amazon ECR Repository for storing Docker container images.
 
 Parameters:
-  RepositoryName:
+  RepoName:
     Type: String
     Default: my-html-site
     Description: Name of the ECR repository to create
 
 Resources:
-  # ------------------------------------------------------------
-  # ECR repository (main Phase-1 resource)
-  # ------------------------------------------------------------
-  MyECRRepository:
+  ECRRepository:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Ref RepositoryName
+      RepositoryName: !Ref RepoName
       ImageScanningConfiguration:
         scanOnPush: true
-      ImageTagMutability: MUTABLE
-      Tags:
-        - Key: Environment
-          Value: Dev
-
-  # ------------------------------------------------------------
-  # OPTIONAL example S3 bucket (uses a proper string key)
-  # ------------------------------------------------------------
-  TrueBucket:                     # ← string key, not boolean
-    Type: AWS::S3::Bucket
-    DeletionPolicy: Delete        # automatically removed with the stack
-    Properties:
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
       Tags:
         - Key: Environment
           Value: Dev
 
 Outputs:
   RepositoryUri:
-    Description: URI of the ECR repository you will push images to
-    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepositoryName}"
-
-  BucketName:
-    Description: Name of the example S3 bucket (remove if not needed)
-    Value: !Ref TrueBucket
+    Description: URI of the created ECR repository
+    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepoName}"
+    Export:
+      Name: !Sub "${AWS::StackName}-RepositoryUri"
