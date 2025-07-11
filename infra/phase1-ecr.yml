@@ -1,27 +1,22 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: >
-  Phase 1 - Create an Amazon ECR Repository for storing Docker container images.
+Description: Phase-1 – create a private ECR repository for the HTML site
 
 Parameters:
   RepoName:
     Type: String
-    Default: my-html-site
-    Description: Name of the ECR repository to create
+    Default: my-html-site          # change if you like
+    Description: Name of the ECR repository
 
 Resources:
-  ECRRepository:
+  HtmlRepo:
     Type: AWS::ECR::Repository
     Properties:
       RepositoryName: !Ref RepoName
+      ImageTagMutability: MUTABLE
       ImageScanningConfiguration:
-        scanOnPush: true
-      Tags:
-        - Key: Environment
-          Value: Dev
+        ScanOnPush: false
 
 Outputs:
   RepositoryUri:
-    Description: URI of the created ECR repository
-    Value: !Sub "${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${RepoName}"
-    Export:
-      Name: !Sub "${AWS::StackName}-RepositoryUri"
+    Value: !GetAtt HtmlRepo.RepositoryUri
+    Description: URI you’ll push the Docker image to
