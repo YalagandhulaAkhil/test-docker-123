@@ -1,50 +1,100 @@
-name: Deploy AWS Infra (IAM + VPC)
+name: Deploy AWS Infrastructure (IAM + VPC)
 
+# ───────────────────────────────────────────────────────────────────────
+# Run on every push to main that touches infra templates, or manually.
+# ───────────────────────────────────────────────────────────────────────
 on:
   push:
     branches: [ main ]
     paths:
       - 'infra/**.yml'
-  workflow_dispatch:
+  workflow_dispatch:   # manual trigger button
 
+# GitHub-generated OIDC token needs id-token:write
 permissions:
   id-token: write
   contents: read
 
 jobs:
   deploy:
-    name: Deploy IAM and VPC Infrastructure
+    name: Deploy IAM-roles and VPC/Subnets stacks
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
+    # ────────────────────────────────────────────
+    # 1️⃣  Pull repo
+    # ────────────────────────────────────────────
+    - name: 📥 Checkout repository
       uses: actions/checkout@v4
 
-    - name: Configure AWS credentials (OIDC)
+    # ────────────────────────────────────────────
+    # 2️⃣  Configure AWS creds using OIDC
+    # ────────────────────────────────────────────
+    - name: 🔑 Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region: ${{ secrets.AWS_REGION }}
+        role-to-assume:  ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:      ${{ secrets.AWS_REGION }}
 
-    - name: Deploy IAM Roles stack
+    # ────────────────────────────────────────────
+    # 3️⃣  Validate IAM template
+    # ────────────────────────────────────────────
+    - name: 🧪 Validate iam-roles.yml
+      run: |
+        aws cloudformation validate-template \
+          --template-body file://infra/iam-roles.yml
+
+    # ────────────────────────────────────────────
+    # 4️⃣  Deploy IAM stack (continue even if it fails so we can diagnose)
+    # ────────────────────────────────────────────
+    - name: 🚀 Deploy iam-roles stack
+      id: deploy_iam
+      continue-on-error: true
       run: |
         aws cloudformation deploy \
           --stack-name iam-roles \
           --template-file infra/iam-roles.yml \
           --capabilities CAPABILITY_NAMED_IAM
 
-    - name: Deploy VPC/Subnet/SecurityGroup stack
+    # ────────────────────────────────────────────
+    # 5️⃣  Diagnose IAM stack failure (only if failed)
+    # ────────────────────────────────────────────
+    - name: 🩺 Diagnose iam-roles failure
+      if: steps.deploy_iam.outcome == 'failure'
+      run: |
+        echo "⚠️ iam-roles stack failed -- printing CREATE_FAILED events"
+        aws cloudformation describe-stack-events \
+          --stack-name iam-roles \
+          --query "StackEvents[?ResourceStatus=='CREATE_FAILED'].[LogicalResourceId,ResourceType,ResourceStatusReason]" \
+          --output table
+        exit 1   # mark workflow as failed after diagnostics
+
+    # ────────────────────────────────────────────
+    # 6️⃣  Validate VPC template
+    # ────────────────────────────────────────────
+    - name: 🧪 Validate vpc-subnets-securitygroup.yml
+      run: |
+        aws cloudformation validate-template \
+          --template-body file://infra/vpc-subnets-securitygroup.yml
+
+    # ────────────────────────────────────────────
+    # 7️⃣  Deploy VPC/Subnet/SecurityGroup stack
+    # ────────────────────────────────────────────
+    - name: 🚀 Deploy vpc-subnet-sg stack
       run: |
         aws cloudformation deploy \
           --stack-name vpc-subnet-sg \
           --template-file infra/vpc-subnets-securitygroup.yml
 
-    - name: Show CloudFormation Outputs
+    # ────────────────────────────────────────────
+    # 8️⃣  Show outputs from both stacks
+    # ────────────────────────────────────────────
+    - name: 📊 Show CloudFormation outputs
       run: |
         for stack in iam-roles vpc-subnet-sg; do
-          echo "Outputs for $stack:"
+          echo "🔸 Outputs for $stack:"
           aws cloudformation describe-stacks \
             --stack-name $stack \
             --query "Stacks[0].Outputs[*].[OutputKey,OutputValue]" \
-            --output table
+            --output table || true
         done
