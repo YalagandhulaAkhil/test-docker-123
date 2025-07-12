@@ -45,7 +45,79 @@ jobs:
           }
 
           echo "REPO_URI=$(get_export ${ECR_STACK}-RepoUri)"           >> $GITHUB_ENV
-          echo "VPC_ID=$(get_export ${VPC_STACK}-VpcId)"               >> $GITHUB_ENV
+          echo "VPCname: Deploy ECS Cluster
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "infra/ecs.yml"
+      - ".github/workflows/deploy-ecs.yml"
+
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-ecs:
+    runs-on: ubuntu-latest
+
+    env:
+      AWS_REGION: ${{ secrets.AWS_REGION }}
+      STACK_NAME: ${{ secrets.STACK_NAME }}
+      REPO_URI: ${{ secrets.ECR_REPO }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials via OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Get VPC and Subnet values
+        id: vpc-outputs
+        run: |
+          export VPC_ID=$(aws cloudformation list-exports --query "Exports[?Name=='my-vpc-stack-VpcId'].Value" --output text)
+          export SUBNET1=$(aws cloudformation list-exports --query "Exports[?Name=='my-vpc-stack-PublicSubnet1Id'].Value" --output text)
+          export SUBNET2=$(aws cloudformation list-exports --query "Exports[?Name=='my-vpc-stack-PublicSubnet2Id'].Value" --output text)
+          echo "VPC_ID=$VPC_ID" >> $GITHUB_ENV
+          echo "SUBNET1=$SUBNET1" >> $GITHUB_ENV
+          echo "SUBNET2=$SUBNET2" >> $GITHUB_ENV
+
+      - name: Get ECS Instance Profile ARN
+        id: iam-outputs
+        run: |
+          export INSTANCE_PROFILE_ARN=$(aws cloudformation list-exports --query "Exports[?Name=='my-iam-stack-ECSInstanceProfileArn'].Value" --output text)
+          echo "INSTANCE_PROFILE_ARN=$INSTANCE_PROFILE_ARN" >> $GITHUB_ENV
+
+      - name: Get latest image tag from ECR
+        id: image
+        run: |
+          IMAGE_TAG=$(aws ecr list-images --repository-name $(basename $REPO_URI) --query 'imageIds[*].imageTag' --output text | tail -n1)
+          IMAGE_URI=${REPO_URI}:${IMAGE_TAG}
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy ECS cluster using CloudFormation
+        run: |
+          aws cloudformation deploy \
+            --stack-name $STACK_NAME \
+            --template-file infra/ecs.yml \
+            --parameter-overrides \
+              ECSClusterName=myhtml-site \
+              SecurityGroupIds= \
+              VpcId=$VPC_ID \
+              SubnetIds="$SUBNET1,$SUBNET2" \
+              Ec2InstanceProfileArn=$INSTANCE_PROFILE_ARN \
+              LatestECSOptimizedAMI="/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+_ID=$(get_export ${VPC_STACK}-VpcId)"               >> $GITHUB_ENV
           echo "SUBNET1=$(get_export ${VPC_STACK}-PublicSubnet1Id)"    >> $GITHUB_ENV
           echo "SUBNET2=$(get_export ${VPC_STACK}-PublicSubnet2Id)"    >> $GITHUB_ENV
           echo "EXEC_ROLE=$(get_export ${IAM_STACK}-ECSExecutionRoleArn)" >> $GITHUB_ENV

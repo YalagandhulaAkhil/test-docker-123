@@ -1,180 +1,132 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type) with ALB, Task Definition, and Service.
+Description: ECS Cluster with EC2 Capacity Provider
 
-# ──────────────────────────
-# Parameters injected by CI
-# ──────────────────────────
 Parameters:
-  PImageUrl:
+  ECSClusterName:
     Type: String
-    Description: "Full ECR image URI with tag (e.g. 5901xxxxx.dkr.ecr.us-east-1.amazonaws.com/repo:sha)"
+    Default: myhtml-site
+    Description: Name of the ECS Cluster
 
   PVpcId:
-    Type: AWS::EC2::VPC::Id
+    Type: String
+    Description: VPC ID where ECS instances will run
+
   PSubnet1:
-    Type: AWS::EC2::Subnet::Id
+    Type: String
+    Description: Public Subnet 1 for ECS instances
+
   PSubnet2:
-    Type: AWS::EC2::Subnet::Id
+    Type: String
+    Description: Public Subnet 2 for ECS instances
+
   PExecutionRoleArn:
     Type: String
+    Description: IAM Role for ECS Execution
 
-# ──────────────────────────
-# Security Groups
-# ──────────────────────────
+  PInstanceProfileArn:
+    Type: String
+    Description: IAM Instance Profile ARN for EC2
+
 Resources:
-  AlbSecurityGroup:
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: !Ref ECSClusterName
+      ClusterSettings:
+        - Name: containerInsights
+          Value: disabled
+
+  ECSLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: !Ref LatestECSAmi
+        IamInstanceProfile:
+          Arn: !Ref PInstanceProfileArn
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref EcsSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: 30
+        UserData:
+          Fn::Base64:
+            Fn::Sub: |
+              #!/bin/bash
+              echo ECS_CLUSTER=${ECSClusterName} >> /etc/ecs/ecs.config
+
+  EcsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
+      GroupDescription: Enable HTTP access
       VpcId: !Ref PVpcId
-      GroupDescription: Inbound 80 from Internet
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
 
-  EcsSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      VpcId: !Ref PVpcId
-      GroupDescription: Inbound 8080 from ALB
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-
-# ──────────────────────────
-# ECS Cluster & Capacity
-# ──────────────────────────
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: test-docker-cluster
-
-  ECSInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: "2012-10-17"
-        Statement:
-          - Effect: Allow
-            Principal: {Service: ec2.amazonaws.com}
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
-
-  ECSInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [!Ref ECSInstanceRole]
-
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
-    Properties:
-      LaunchTemplateData:
-        InstanceType: t3.micro
-        ImageId: !Sub "${AWS::SSM::Parameter:/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id}"
-        IamInstanceProfile: {Name: !Ref ECSInstanceProfile}
-        SecurityGroupIds: [!Ref EcsSecurityGroup]
-        UserData:
-          Fn::Base64:
-            Fn::Sub:
-              - |
-                #!/bin/bash
-                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
-              - {ClusterName: !Ref ECSCluster}
-
-  AutoScalingGroup:
+  ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier: [!Ref PSubnet1, !Ref PSubnet2]
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
-      MinSize: 1
+      MinSize: 0
       MaxSize: 2
       DesiredCapacity: 1
+      VPCZoneIdentifier:
+        - !Ref PSubnet1
+        - !Ref PSubnet2
+      MixedInstancesPolicy:
+        LaunchTemplate:
+          LaunchTemplateSpecification:
+            LaunchTemplateId: !Ref ECSLaunchTemplate
+            Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+          Overrides:
+            - InstanceType: t3.micro
+        InstancesDistribution:
+          OnDemandBaseCapacity: 0
+          OnDemandPercentageAboveBaseCapacity: 0
+          SpotAllocationStrategy: lowest-price
+      Tags:
+        - Key: Name
+          Value: !Sub "ECS Instance - ${ECSClusterName}"
+          PropagateAtLaunch: true
 
-# ──────────────────────────
-# Application Load Balancer
-# ──────────────────────────
-  ApplicationLB:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+  AsgCapacityProvider:
+    Type: AWS::ECS::CapacityProvider
     Properties:
-      Name: test-docker-alb
-      Scheme: internet-facing
-      Subnets: [!Ref PSubnet1, !Ref PSubnet2]
-      SecurityGroups: [!Ref AlbSecurityGroup]
-      Type: application
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
+        ManagedScaling:
+          Status: ENABLED
+          TargetCapacity: 100
+        ManagedTerminationProtection: DISABLED
 
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      VpcId: !Ref PVpcId
-      Port: 8080
-      Protocol: HTTP
-      TargetType: ip
-      HealthCheckPath: /
-      Matcher: {HttpCode: 200-399}
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref ApplicationLB
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-
-# ──────────────────────────
-# Task Definition & Service
-# ──────────────────────────
-  TaskDefinition:
-    Type: AWS::ECS::TaskDefinition
-    Properties:
-      Cpu: "256"
-      Memory: "512"
-      NetworkMode: awsvpc
-      RequiresCompatibilities: [EC2]
-      ExecutionRoleArn: !Ref PExecutionRoleArn
-      ContainerDefinitions:
-        - Name: web
-          Image: !Ref PImageUrl
-          Essential: true
-          PortMappings:
-            - ContainerPort: 8080
-
-  ECSService:
-    Type: AWS::ECS::Service
-    DependsOn: Listener
+  ClusterCPAssociation:
+    Type: AWS::ECS::ClusterCapacityProviderAssociations
     Properties:
       Cluster: !Ref ECSCluster
-      DesiredCount: 1
-      LaunchType: EC2
-      TaskDefinition: !Ref TaskDefinition
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          AssignPublicIp: ENABLED
-          Subnets: [!Ref PSubnet1, !Ref PSubnet2]
-          SecurityGroups: [!Ref EcsSecurityGroup]
-      LoadBalancers:
-        - ContainerName: web
-          ContainerPort: 8080
-          TargetGroupArn: !Ref TargetGroup
+      CapacityProviders:
+        - FARGATE
+        - FARGATE_SPOT
+        - !Ref AsgCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - Base: 0
+          Weight: 1
+          CapacityProvider: !Ref AsgCapacityProvider
 
-# ──────────────────────────
-# Outputs
-# ──────────────────────────
+  LatestECSAmi:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
+
 Outputs:
-  AlbDNS:
-    Description: Public URL for the service
-    Value: !GetAtt ApplicationLB.DNSName
-    Export:
-      Name: !Sub "${AWS::StackName}-AlbDNS"
-
-  ClusterName:
+  ECSCluster:
+    Description: The created ECS Cluster
     Value: !Ref ECSCluster
     Export:
-      Name: !Sub "${AWS::StackName}-ClusterName"
+      Name: !Sub "${AWS::StackName}-ECSCluster"
