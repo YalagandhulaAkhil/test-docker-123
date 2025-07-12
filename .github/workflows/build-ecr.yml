@@ -1,0 +1,64 @@
+name: Build & Push Docker image to ECR
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'Dockerfile'
+      - '.github/workflows/build-push-ecr.yml'
+      - '**/*.html'        # if your app source is HTML
+      - '**/*.js'
+      - '**/*.py'
+  workflow_dispatch:       # manual trigger
+
+permissions:
+  id-token: write          # needed for OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO_NAME: test-docker-123
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Authenticate to AWS via OIDC
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
+        aws-region: ${{ env.AWS_REGION }}
+
+    # Deploy / update the ECR stack (idempotent)
+    - name: Deploy ECR CloudFormation stack
+      run: |
+        aws cloudformation deploy \
+          --stack-name ecr-stack \
+          --template-file infra/ecr.yml \
+          --no-fail-on-empty-changeset
+
+    # Get the repo URI exported by the stack
+    - name: Fetch ECR repository URI
+      id: get-uri
+      run: |
+        URI=$(aws cloudformation list-exports --query "Exports[?Name=='ecr-stack-RepoUri'].Value" --output text)
+        echo "repo_uri=$URI" >> $GITHUB_OUTPUT
+
+    # Log in to ECR
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # Build, tag, and push
+    - name: Build & push Docker image
+      env:
+        REPO_URI: ${{ steps.get-uri.outputs.repo_uri }}
+        IMAGE_TAG: ${{ github.sha }}
+      run: |
+        docker build -t $REPO_URI:latest -t $REPO_URI:$IMAGE_TAG .
+        docker push $REPO_URI:latest
+        docker push $REPO_URI:$IMAGE_TAG
