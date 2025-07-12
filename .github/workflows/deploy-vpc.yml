@@ -1,0 +1,30 @@
+name: Deploy VPC Stack
+
+on:
+  workflow_dispatch: # allows manual trigger from GitHub UI
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy-vpc:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy VPC CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name my-vpc-stack \
+            --template-file infra/vpc.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
