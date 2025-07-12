@@ -32,9 +32,9 @@ Resources:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
     Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 
-# ──────────────
-# Security group (8080)
-# ──────────────
+  # ──────────────
+  # Security group (8080)
+  # ──────────────
   EcsHostSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -46,9 +46,9 @@ Resources:
           ToPort: 8080            # ← updated
           CidrIp: 0.0.0.0/0
 
-# ──────────────
-# ECS Cluster
-# ──────────────
+  # ──────────────
+  # ECS Cluster
+  # ──────────────
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -57,9 +57,9 @@ Resources:
         - Name: containerInsights
           Value: disabled
 
-# ──────────────
-# Launch Template
-# ──────────────
+  # ──────────────
+  # Launch Template
+  # ──────────────
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -78,9 +78,9 @@ Resources:
             # variable map:
               { "ClusterName": !Ref ECSClusterName }
 
-# ──────────────
-# Auto Scaling Group
-# ──────────────
+  # ──────────────
+  # Auto Scaling Group
+  # ──────────────
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -106,9 +106,9 @@ Resources:
           Value: !Sub "ECS Host – ${ECSClusterName}"
           PropagateAtLaunch: true
 
-# ──────────────
-# Capacity Provider & association
-# ──────────────
+  # ──────────────
+  # Capacity Provider & association
+  # ──────────────
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
