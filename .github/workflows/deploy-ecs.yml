@@ -4,8 +4,8 @@ on:
   push:
     branches: [main]
     paths:
-      - 'infra/ecs.yml'
-      - '.github/workflows/deploy-ecs.yml'
+      - "infra/ecs.yml"
+      - ".github/workflows/deploy-ecs.yml"
   workflow_dispatch:
 
 permissions:
@@ -14,16 +14,19 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  VPC_STACK: vpc-stack            # ⇦ adjust if your VPC stack is named differently
-  IAM_STACK: iam-stack            # ⇦ change if needed
+
+  # Actual names of your existing stacks (per screenshot)
+  VPC_STACK: my-vpc-stack
+  IAM_STACK: my-iam-stack
   ECR_STACK: ecr-stack
   ECS_STACK: ecs-stack
 
 jobs:
   deploy:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
@@ -32,37 +35,34 @@ jobs:
           role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
-      # ──────────────────────────────────────────────
-      # Collect required outputs from earlier stacks
-      # ──────────────────────────────────────────────
-      - name: Gather stack exports
+      # ─── Gather outputs from prerequisite stacks ───
+      - name: Collect stack exports
         id: exports
         run: |
-          function export_val () {
+          get_export () {
             aws cloudformation list-exports \
-              --query "Exports[?Name=='$1'].Value" \
-              --output text
+              --query "Exports[?Name=='$1'].Value" --output text
           }
-          echo "repo_uri=$(export_val ${ECR_STACK}-RepoUri)"           >> $GITHUB_OUTPUT
-          echo "vpc_id=$(export_val ${VPC_STACK}-VpcId)"               >> $GITHUB_OUTPUT
-          echo "subnet1=$(export_val ${VPC_STACK}-PublicSubnet1Id)"    >> $GITHUB_OUTPUT
-          echo "subnet2=$(export_val ${VPC_STACK}-PublicSubnet2Id)"    >> $GITHUB_OUTPUT
-          echo "exec_role=$(export_val ${IAM_STACK}-ECSExecutionRoleArn)" >> $GITHUB_OUTPUT
 
-      # ──────────────────────────────────────────────
-      # Deploy / update the ECS stack
-      # ──────────────────────────────────────────────
-      - name: Deploy CloudFormation
+          echo "REPO_URI=$(get_export ${ECR_STACK}-RepoUri)"           >> $GITHUB_ENV
+          echo "VPC_ID=$(get_export ${VPC_STACK}-VpcId)"               >> $GITHUB_ENV
+          echo "SUBNET1=$(get_export ${VPC_STACK}-PublicSubnet1Id)"    >> $GITHUB_ENV
+          echo "SUBNET2=$(get_export ${VPC_STACK}-PublicSubnet2Id)"    >> $GITHUB_ENV
+          echo "EXEC_ROLE=$(get_export ${IAM_STACK}-ECSExecutionRoleArn)" >> $GITHUB_ENV
+
+      # ─── Deploy / update ECS stack ───
+      - name: Deploy ECS CloudFormation stack
         run: |
-          IMAGE_URI=${{ steps.exports.outputs.repo_uri }}:${{ github.sha }}
+          IMAGE_URI=${REPO_URI}:${{ github.sha }}
+
           aws cloudformation deploy \
-            --stack-name ${{ env.ECS_STACK }} \
+            --stack-name ${ECS_STACK} \
             --template-file infra/ecs.yml \
             --parameter-overrides \
-                PImageUrl=$IMAGE_URI \
-                PVpcId=${{ steps.exports.outputs.vpc_id }} \
-                PSubnet1=${{ steps.exports.outputs.subnet1 }} \
-                PSubnet2=${{ steps.exports.outputs.subnet2 }} \
-                PExecutionRoleArn=${{ steps.exports.outputs.exec_role }} \
+                PImageUrl=${IMAGE_URI} \
+                PVpcId=${VPC_ID} \
+                PSubnet1=${SUBNET1} \
+                PSubnet2=${SUBNET2} \
+                PExecutionRoleArn=${EXEC_ROLE} \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset

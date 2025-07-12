@@ -1,40 +1,32 @@
----
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type), Task Definition and Service behind ALB — parameterised to consume outputs from VPC, IAM and ECR stacks.
+Description: ECS cluster (EC2 launch type) with ALB, Task Definition, and Service.
 
-# ------------------------------------------------------------
-# Parameters provided by GitHub Actions at deploy time
-# ------------------------------------------------------------
+# ──────────────────────────
+# Parameters injected by CI
+# ──────────────────────────
 Parameters:
   PImageUrl:
     Type: String
-    Description: "Full ECR image URI with tag (e.g. 5901xxxxxxx.dkr.ecr.us-east-1.amazonaws.com/repo:sha)"
+    Description: "Full ECR image URI with tag (e.g. 5901xxxxx.dkr.ecr.us-east-1.amazonaws.com/repo:sha)"
 
   PVpcId:
     Type: AWS::EC2::VPC::Id
-    Description: "VPC where cluster runs (export from vpc stack)"
-
   PSubnet1:
     Type: AWS::EC2::Subnet::Id
-    Description: "Public subnet 1 (AZ-A)"
-
   PSubnet2:
     Type: AWS::EC2::Subnet::Id
-    Description: "Public subnet 2 (AZ-B)"
-
   PExecutionRoleArn:
     Type: String
-    Description: "ARN of ECS Task Execution Role (export from iam stack)"
 
-# ------------------------------------------------------------
+# ──────────────────────────
 # Security Groups
-# ------------------------------------------------------------
+# ──────────────────────────
 Resources:
   AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Inbound 80 from Internet → ALB"
       VpcId: !Ref PVpcId
+      GroupDescription: Inbound 80 from Internet
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 80
@@ -44,17 +36,17 @@ Resources:
   EcsSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: "Inbound 8080 from ALB → Tasks"
       VpcId: !Ref PVpcId
+      GroupDescription: Inbound 8080 from ALB
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
           SourceSecurityGroupId: !Ref AlbSecurityGroup
 
-# ------------------------------------------------------------
-# ECS Cluster and Capacity (t3.micro free-tier)
-# ------------------------------------------------------------
+# ──────────────────────────
+# ECS Cluster & Capacity
+# ──────────────────────────
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -86,9 +78,12 @@ Resources:
         IamInstanceProfile: {Name: !Ref ECSInstanceProfile}
         SecurityGroupIds: [!Ref EcsSecurityGroup]
         UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+          Fn::Base64:
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
+              - {ClusterName: !Ref ECSCluster}
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
@@ -101,9 +96,9 @@ Resources:
       MaxSize: 2
       DesiredCapacity: 1
 
-# ------------------------------------------------------------
-#   ALB (HTTP-only to stay in free tier; add ACM/HTTPS later)
-# ------------------------------------------------------------
+# ──────────────────────────
+# Application Load Balancer
+# ──────────────────────────
   ApplicationLB:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
     Properties:
@@ -133,9 +128,9 @@ Resources:
         - Type: forward
           TargetGroupArn: !Ref TargetGroup
 
-# ------------------------------------------------------------
-#   Task Definition & Service
-# ------------------------------------------------------------
+# ──────────────────────────
+# Task Definition & Service
+# ──────────────────────────
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
@@ -169,10 +164,12 @@ Resources:
           ContainerPort: 8080
           TargetGroupArn: !Ref TargetGroup
 
-# ------------------------------------------------------------
+# ──────────────────────────
+# Outputs
+# ──────────────────────────
 Outputs:
   AlbDNS:
-    Description: "URL to access the service"
+    Description: Public URL for the service
     Value: !GetAtt ApplicationLB.DNSName
     Export:
       Name: !Sub "${AWS::StackName}-AlbDNS"
