@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "ECS cluster (EC2 launch type) + ASG capacity provider – no Service"
+Description: "ECS cluster (EC2 launch type) with ASG capacity provider – no Service"
 
-# ──────────────
+# ─────────────────────
 # Parameters
-# ──────────────
+# ─────────────────────
 Parameters:
   ECSClusterName:
     Type: String
@@ -26,15 +26,17 @@ Parameters:
     Type: String
     Description: "IAM instance-profile ARN for the EC2 hosts"
 
-# Pull latest Amazon Linux 2023 ECS-optimised AMI
+# ─────────────────────
+# Latest ECS-optimised AMI
+# ─────────────────────
 Resources:
   LatestECSAmi:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
     Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 
-  # ──────────────
-  # Security group (8080)
-  # ──────────────
+# ─────────────────────
+# Security group (port 8080)
+# ─────────────────────
   EcsHostSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -42,13 +44,13 @@ Resources:
       VpcId: !Ref PVpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
-          FromPort: 8080          # ← updated
-          ToPort: 8080            # ← updated
+          FromPort: 8080
+          ToPort: 8080
           CidrIp: 0.0.0.0/0
 
-  # ──────────────
-  # ECS Cluster
-  # ──────────────
+# ─────────────────────
+# ECS Cluster
+# ─────────────────────
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -57,9 +59,9 @@ Resources:
         - Name: containerInsights
           Value: disabled
 
-  # ──────────────
-  # Launch Template
-  # ──────────────
+# ─────────────────────
+# Launch Template
+# ─────────────────────
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
@@ -72,15 +74,15 @@ Resources:
           - !Ref EcsHostSecurityGroup
         UserData:
           Fn::Base64:
-            Fn::Sub: |
-              #!/bin/bash
-              echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
-            # variable map:
-              { "ClusterName": !Ref ECSClusterName }
+            Fn::Sub:
+              - |
+                #!/bin/bash
+                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
+              - ClusterName: !Ref ECSClusterName
 
-  # ──────────────
-  # Auto Scaling Group
-  # ──────────────
+# ─────────────────────
+# Auto Scaling Group
+# ─────────────────────
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
@@ -106,9 +108,9 @@ Resources:
           Value: !Sub "ECS Host – ${ECSClusterName}"
           PropagateAtLaunch: true
 
-  # ──────────────
-  # Capacity Provider & association
-  # ──────────────
+# ─────────────────────
+# Capacity Provider + association
+# ─────────────────────
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
@@ -128,13 +130,13 @@ Resources:
         - FARGATE
         - FARGATE_SPOT
       DefaultCapacityProviderStrategy:
-        - CapacityProvider: !Ref AsgCapacityProvider
-          Base: 0
+        - Base: 0
           Weight: 1
+          CapacityProvider: !Ref AsgCapacityProvider
 
-# ──────────────
+# ─────────────────────
 # Outputs
-# ──────────────
+# ─────────────────────
 Outputs:
   ClusterArn:
     Description: "ARN of the ECS cluster"
