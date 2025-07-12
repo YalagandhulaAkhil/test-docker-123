@@ -1,30 +1,42 @@
-name: Deploy IAM Stack
+name: Deploy IAM Roles (Execution / Task / Instance)
 
 on:
+  # Re-run whenever the IAM template or this workflow changes
+  push:
+    branches: [main]
+    paths:
+      - "infra/iam.yml"
+      - ".github/workflows/deploy-iam.yml"
+
+  # Manual trigger from the Actions tab
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write    # OIDC to AWS
   contents: read
+
+env:
+  AWS_REGION: us-east-1
+  IAM_STACK: my-iam-stack          # stack name you want in CloudFormation
 
 jobs:
   deploy-iam:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
+          aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy IAM CloudFormation stack
         run: |
           aws cloudformation deploy \
-            --stack-name my-iam-stack \
+            --stack-name ${{ env.IAM_STACK }} \
             --template-file infra/iam.yml \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
