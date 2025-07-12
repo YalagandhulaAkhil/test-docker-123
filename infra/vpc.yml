@@ -1,117 +1,119 @@
+---
 AWSTemplateFormatVersion: "2010-09-09"
-Description: VPC with public subnets for ECS (Free Tier compatible)
+Description: ECS Cluster, Task Definition, and Service with ALB
 
 Parameters:
-  VpcCidr:
+  ImageUrl:
     Type: String
-    Default: 10.0.0.0/16
-    Description: CIDR block for the VPC
-
-  PublicSubnet1Cidr:
-    Type: String
-    Default: 10.0.1.0/24
-    Description: CIDR block for the public subnet in AZ 1
-
-  PublicSubnet2Cidr:
-    Type: String
-    Default: 10.0.2.0/24
-    Description: CIDR block for the public subnet in AZ 2
+    Description: Docker image URI with tag (e.g., repo/image:tag)
 
 Resources:
-
-  MyVpc:
-    Type: AWS::EC2::VPC
+  ECSCluster:
+    Type: AWS::ECS::Cluster
     Properties:
-      CidrBlock: !Ref VpcCidr
-      EnableDnsSupport: true
-      EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: FreeTierVPC
+      ClusterName: test-docker-cluster
 
-  InternetGateway:
-    Type: AWS::EC2::InternetGateway
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
     Properties:
-      Tags:
-        - Key: Name
-          Value: FreeTierIGW
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
-  AttachGateway:
-    Type: AWS::EC2::VPCGatewayAttachment
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
     Properties:
-      VpcId: !Ref MyVpc
-      InternetGatewayId: !Ref InternetGateway
+      Roles:
+        - !Ref ECSInstanceRole
 
-  PublicSubnet1:
-    Type: AWS::EC2::Subnet
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
     Properties:
-      VpcId: !Ref MyVpc
-      CidrBlock: !Ref PublicSubnet1Cidr
-      AvailabilityZone:
-        Fn::Select:
-          - 0
-          - Fn::GetAZs: !Ref "AWS::Region"
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: FreeTier-PublicSubnet1
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: ami-0ee8244746ec5d6d4  # Amazon Linux 2 ECS-optimized
+        IamInstanceProfile:
+          Name: !Ref ECSInstanceProfile
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
 
-  PublicSubnet2:
-    Type: AWS::EC2::Subnet
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VpcId: !Ref MyVpc
-      CidrBlock: !Ref PublicSubnet2Cidr
-      AvailabilityZone:
-        Fn::Select:
-          - 1
-          - Fn::GetAZs: !Ref "AWS::Region"
-      MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: FreeTier-PublicSubnet2
+      VPCZoneIdentifier:
+        - Fn::ImportValue: vpc-stack-PublicSubnet1Id
+        - Fn::ImportValue: vpc-stack-PublicSubnet2Id
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 2
+      DesiredCapacity: 1
 
-  PublicRouteTable:
-    Type: AWS::EC2::RouteTable
+  TaskDefinition:
+    Type: AWS::ECS::TaskDefinition
     Properties:
-      VpcId: !Ref MyVpc
-      Tags:
-        - Key: Name
-          Value: FreeTier-Public-RT
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
+      RequiresCompatibilities: [EC2]
+      ExecutionRoleArn:
+        Fn::ImportValue: iam-stack-ECSExecutionRoleArn
+      ContainerDefinitions:
+        - Name: test-container
+          Image: !Ref ImageUrl
+          Essential: true
+          PortMappings:
+            - ContainerPort: 8080
 
-  PublicRoute:
-    Type: AWS::EC2::Route
+  ECSSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
     Properties:
-      RouteTableId: !Ref PublicRouteTable
-      DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
+      GroupDescription: Allow HTTP from anywhere
+      VpcId:
+        Fn::ImportValue: vpc-stack-VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
 
-  PublicSubnet1RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
+  ECSService:
+    Type: AWS::ECS::Service
     Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
-
-  PublicSubnet2RouteTableAssociation:
-    Type: AWS::EC2::SubnetRouteTableAssociation
-    Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref PublicRouteTable
+      Cluster: !Ref ECSCluster
+      DesiredCount: 1
+      LaunchType: EC2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          Subnets:
+            - Fn::ImportValue: vpc-stack-PublicSubnet1Id
+            - Fn::ImportValue: vpc-stack-PublicSubnet2Id
+          SecurityGroups:
+            - !Ref ECSSecurityGroup
+          AssignPublicIp: ENABLED
+      TaskDefinition: !Ref TaskDefinition
 
 Outputs:
-  VpcId:
-    Description: The VPC ID
-    Value: !Ref MyVpc
+  ECSClusterName:
+    Value: !Ref ECSCluster
     Export:
-      Name: !Sub "${AWS::StackName}-VpcId"
+      Name: !Sub "${AWS::StackName}-ECSClusterName"
 
-  PublicSubnet1Id:
-    Description: Public subnet 1 ID
-    Value: !Ref PublicSubnet1
+  TaskDefinitionArn:
+    Value: !Ref TaskDefinition
     Export:
-      Name: !Sub "${AWS::StackName}-PublicSubnet1Id"
+      Name: !Sub "${AWS::StackName}-TaskDefinitionArn"
 
-  PublicSubnet2Id:
-    Description: Public subnet 2 ID
-    Value: !Ref PublicSubnet2
+  ECSServiceName:
+    Value: !Ref ECSService
     Export:
-      Name: !Sub "${AWS::StackName}-PublicSubnet2Id"
+      Name: !Sub "${AWS::StackName}-ServiceName"

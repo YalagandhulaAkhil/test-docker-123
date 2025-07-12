@@ -1,106 +1,33 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type) + ALB front-end for test-docker-123
+Description: ECS Cluster + Task + Service (EC2 Launch Type)
 
 Parameters:
-  VpcId:
+  PImageUrl:
+    Type: String
+  PVpcId:
     Type: AWS::EC2::VPC::Id
-  PublicSubnet1Id:
+  PSubnet1:
     Type: AWS::EC2::Subnet::Id
-  PublicSubnet2Id:
+  PSubnet2:
     Type: AWS::EC2::Subnet::Id
-  TaskExecutionRoleArn:
+  PExecutionRoleArn:
     Type: String
-  ImageUri:
-    Type: String
-    Description: "Full ECR image URI incl. tag (e.g. 123456789012.dkr.ecr.us-east-1.amazonaws.com/test:abcd123)"
-  DesiredCount:
-    Type: Number
-    Default: 1
-
-Mappings:
-  ECSAMI:
-    us-east-1:
-      AMI: ami-0ee8244746ec5d6d4   # Amazon Linux 2 ECS-optimized (as of Jul 2025)
 
 Resources:
-  # ──────────────────────────────────────────
-  # Security Groups
-  # ──────────────────────────────────────────
-  AlbSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow HTTP/HTTPS from Internet
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: tcp
-          FromPort: 80
-          ToPort: 80
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: tcp
-          FromPort: 443
-          ToPort: 443
-
-  TaskSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Allow 8080 from ALB SG
-      VpcId: !Ref VpcId
-      SecurityGroupIngress:
-        - IpProtocol: tcp
-          FromPort: 8080
-          ToPort: 8080
-          SourceSecurityGroupId: !Ref AlbSecurityGroup
-
-  # ──────────────────────────────────────────
-  # ALB + Target Group + Listener
-  # ──────────────────────────────────────────
-  LoadBalancer:
-    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
-    Properties:
-      Name: ecs-alb
-      Subnets: [!Ref PublicSubnet1Id, !Ref PublicSubnet2Id]
-      SecurityGroups: [!Ref AlbSecurityGroup]
-      Scheme: internet-facing
-      Type: application
-
-  TargetGroup:
-    Type: AWS::ElasticLoadBalancingV2::TargetGroup
-    Properties:
-      Name: ecs-tg
-      VpcId: !Ref VpcId
-      Port: 8080
-      Protocol: HTTP
-      TargetType: instance
-      HealthCheckPath: /
-      Matcher: { HttpCode: "200-399" }
-
-  Listener:
-    Type: AWS::ElasticLoadBalancingV2::Listener
-    Properties:
-      LoadBalancerArn: !Ref LoadBalancer
-      Port: 80
-      Protocol: HTTP
-      DefaultActions:
-        - Type: forward
-          TargetGroupArn: !Ref TargetGroup
-
-  # ──────────────────────────────────────────
-  # ECS Cluster & Capacity (ASG)
-  # ──────────────────────────────────────────
-  Cluster:
+  ECSCluster:
     Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: test-docker-cluster
 
-  EcsInstanceProfile:
+  InstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
-      Roles: [!Ref EC2Role]
+      Roles: [!Ref ECSInstanceRole]
 
-  EC2Role:
+  ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
@@ -109,64 +36,60 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
-  LaunchTemplate:
-    Type: AWS::EC2::LaunchTemplate
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
     Properties:
-      LaunchTemplateData:
-        ImageId: !FindInMap [ECSAMI, !Ref "AWS::Region", AMI]
-        InstanceType: t3.micro
-        IamInstanceProfile:
-          Arn: !GetAtt EcsInstanceProfile.Arn
-        SecurityGroupIds: [!Ref TaskSecurityGroup]
-        UserData:
-          Fn::Base64: !Sub |
-            #!/bin/bash
-            echo ECS_CLUSTER=${Cluster} >> /etc/ecs/ecs.config
+      ImageId: ami-0ee8244746ec5d6d4  # Amazon ECS-optimized AMI (us-east-1)
+      InstanceType: t3.micro
+      AssociatePublicIpAddress: true
+      IamInstanceProfile: !Ref InstanceProfile
+      SecurityGroups: [!Ref InstanceSG]
+      UserData:
+        Fn::Base64: !Sub |
+          #!/bin/bash
+          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
 
   AutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier: [!Ref PublicSubnet1Id, !Ref PublicSubnet2Id]
+      LaunchConfigurationName: !Ref LaunchConfig
       MinSize: 1
       MaxSize: 2
       DesiredCapacity: 1
-      LaunchTemplate:
-        LaunchTemplateId: !Ref LaunchTemplate
-        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      VPCZoneIdentifier: [!Ref PSubnet1, !Ref PSubnet2]
 
-  # ──────────────────────────────────────────
-  # Task Definition & Service
-  # ──────────────────────────────────────────
+  InstanceSG:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Allow traffic from ALB to container
+      VpcId: !Ref PVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Cpu: 256
-      Memory: 512
+      Family: test-docker-task
       NetworkMode: bridge
       RequiresCompatibilities: [EC2]
-      ExecutionRoleArn: !Ref TaskExecutionRoleArn
+      Cpu: 256
+      Memory: 512
+      ExecutionRoleArn: !Ref PExecutionRoleArn
       ContainerDefinitions:
-        - Name: web
-          Image: !Ref ImageUri
+        - Name: app
+          Image: !Ref PImageUrl
+          Essential: true
           PortMappings:
             - ContainerPort: 8080
-          Essential: true
 
-  Service:
+  ECSService:
     Type: AWS::ECS::Service
-    DependsOn: Listener
+    DependsOn: AutoScalingGroup
     Properties:
-      Cluster: !Ref Cluster
-      DesiredCount: !Ref DesiredCount
+      Cluster: !Ref ECSCluster
+      DesiredCount: 1
       LaunchType: EC2
       TaskDefinition: !Ref TaskDefinition
-      LoadBalancers:
-        - ContainerName: web
-          ContainerPort: 8080
-          TargetGroupArn: !Ref TargetGroup
-
-Outputs:
-  AlbDnsName:
-    Value: !GetAtt LoadBalancer.DNSName
-    Export:
-      Name: !Sub "${AWS::StackName}-AlbDns"

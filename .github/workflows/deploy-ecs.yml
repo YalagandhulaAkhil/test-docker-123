@@ -1,4 +1,4 @@
-name: Deploy / Update ECS Stack
+name: Deploy ECS Cluster and Service
 
 on:
   push:
@@ -6,8 +6,6 @@ on:
     paths:
       - 'infra/ecs.yml'
       - '.github/workflows/deploy-ecs.yml'
-      - 'Dockerfile'
-      - '**/*.html'     # app sources
   workflow_dispatch:
 
 permissions:
@@ -16,56 +14,36 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
+  ECR_STACK_NAME: ecr-stack
+  ECS_STACK_NAME: ecs-stack
 
 jobs:
-  deploy:
+  deploy-ecs:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
 
-      # 1) OIDC auth
-      - uses: aws-actions/configure-aws-credentials@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
           aws-region: ${{ env.AWS_REGION }}
 
-      # 2) Build & push latest image (re-use build-push-ecr logic)
-      - uses: aws-actions/amazon-ecr-login@v2
-
-      - name: Get ECR URI
-        id: ecr
+      - name: Get ECR repo URI
+        id: get-uri
         run: |
           URI=$(aws cloudformation list-exports \
-            --query "Exports[?Name=='ecr-stack-RepoUri'].Value" --output text)
-          echo "repo=$URI" >> $GITHUB_OUTPUT
+              --query "Exports[?Name=='${ECR_STACK_NAME}-RepoUri'].Value" \
+              --output text)
+          echo "repo_uri=$URI" >> $GITHUB_OUTPUT
 
-      - name: Build & push image
-        env:
-          REPO_URI: ${{ steps.ecr.outputs.repo }}
-          TAG: ${{ github.sha }}
+      - name: Deploy ECS Cluster + Service
         run: |
-          docker build -t $REPO_URI:$TAG -t $REPO_URI:latest .
-          docker push $REPO_URI:$TAG
-          docker push $REPO_URI:latest
-
-      # 3) Deploy / update ECS CloudFormation stack
-      - name: Deploy ECS stack
-        run: |
-          # Fetch outputs from earlier stacks
-          VPC=$(aws cloudformation list-exports --query "Exports[?Name=='vpc-stack-VpcId'].Value" --output text)
-          PUB1=$(aws cloudformation list-exports --query "Exports[?Name=='vpc-stack-PublicSubnet1Id'].Value" --output text)
-          PUB2=$(aws cloudformation list-exports --query "Exports[?Name=='vpc-stack-PublicSubnet2Id'].Value" --output text)
-          ROLE=$(aws cloudformation list-exports --query "Exports[?Name=='iam-stack-ECSExecutionRoleArn'].Value" --output text)
-          IMAGE=${{ steps.ecr.outputs.repo }}:${{ github.sha }}
-
+          IMAGE_URI=${{ steps.get-uri.outputs.repo_uri }}:${{ github.sha }}
           aws cloudformation deploy \
-            --stack-name ecs-stack \
+            --stack-name ${{ env.ECS_STACK_NAME }} \
             --template-file infra/ecs.yml \
+            --parameter-overrides ImageUrl=$IMAGE_URI \
             --capabilities CAPABILITY_NAMED_IAM \
-            --parameter-overrides \
-                VpcId=$VPC \
-                PublicSubnet1Id=$PUB1 \
-                PublicSubnet2Id=$PUB2 \
-                TaskExecutionRoleArn=$ROLE \
-                ImageUri=$IMAGE \
             --no-fail-on-empty-changeset
