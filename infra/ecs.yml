@@ -1,85 +1,151 @@
+---
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS Cluster + Task + Service (EC2 Launch Type)
+Description: ECS cluster (EC2 launch type), Task Definition and Service behind ALB — parameterised to consume outputs from VPC, IAM and ECR stacks.
 
+# ------------------------------------------------------------
+# Parameters provided by GitHub Actions at deploy time
+# ------------------------------------------------------------
 Parameters:
   PImageUrl:
     Type: String
+    Description: "Full ECR image URI with tag (e.g. 5901xxxxxxx.dkr.ecr.us-east-1.amazonaws.com/repo:sha)"
+
   PVpcId:
     Type: AWS::EC2::VPC::Id
+    Description: "VPC where cluster runs (export from vpc stack)"
+
   PSubnet1:
     Type: AWS::EC2::Subnet::Id
+    Description: "Public subnet 1 (AZ-A)"
+
   PSubnet2:
     Type: AWS::EC2::Subnet::Id
+    Description: "Public subnet 2 (AZ-B)"
+
   PExecutionRoleArn:
     Type: String
+    Description: "ARN of ECS Task Execution Role (export from iam stack)"
 
+# ------------------------------------------------------------
+# Security Groups
+# ------------------------------------------------------------
 Resources:
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: test-docker-cluster
-
-  InstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Roles: [!Ref ECSInstanceRole]
-
-  ECSInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: ec2.amazonaws.com
-            Action: sts:AssumeRole
-      ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
-
-  LaunchConfig:
-    Type: AWS::AutoScaling::LaunchConfiguration
-    Properties:
-      ImageId: ami-0ee8244746ec5d6d4  # Amazon ECS-optimized AMI (us-east-1)
-      InstanceType: t3.micro
-      AssociatePublicIpAddress: true
-      IamInstanceProfile: !Ref InstanceProfile
-      SecurityGroups: [!Ref InstanceSG]
-      UserData:
-        Fn::Base64: !Sub |
-          #!/bin/bash
-          echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
-
-  AutoScalingGroup:
-    Type: AWS::AutoScaling::AutoScalingGroup
-    Properties:
-      LaunchConfigurationName: !Ref LaunchConfig
-      MinSize: 1
-      MaxSize: 2
-      DesiredCapacity: 1
-      VPCZoneIdentifier: [!Ref PSubnet1, !Ref PSubnet2]
-
-  InstanceSG:
+  AlbSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow traffic from ALB to container
+      GroupDescription: "Inbound 80 from Internet → ALB"
+      VpcId: !Ref PVpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+
+  EcsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: "Inbound 8080 from ALB → Tasks"
       VpcId: !Ref PVpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
-          CidrIp: 0.0.0.0/0
+          SourceSecurityGroupId: !Ref AlbSecurityGroup
 
+# ------------------------------------------------------------
+# ECS Cluster and Capacity (t3.micro free-tier)
+# ------------------------------------------------------------
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+    Properties:
+      ClusterName: test-docker-cluster
+
+  ECSInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: Allow
+            Principal: {Service: ec2.amazonaws.com}
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
+
+  ECSInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Roles: [!Ref ECSInstanceRole]
+
+  LaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateData:
+        InstanceType: t3.micro
+        ImageId: !Sub "${AWS::SSM::Parameter:/aws/service/ecs/optimized-ami/amazon-linux-2/recommended/image_id}"
+        IamInstanceProfile: {Name: !Ref ECSInstanceProfile}
+        SecurityGroupIds: [!Ref EcsSecurityGroup]
+        UserData:
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${ECSCluster} >> /etc/ecs/ecs.config
+
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      VPCZoneIdentifier: [!Ref PSubnet1, !Ref PSubnet2]
+      LaunchTemplate:
+        LaunchTemplateId: !Ref LaunchTemplate
+        Version: !GetAtt LaunchTemplate.LatestVersionNumber
+      MinSize: 1
+      MaxSize: 2
+      DesiredCapacity: 1
+
+# ------------------------------------------------------------
+#   ALB (HTTP-only to stay in free tier; add ACM/HTTPS later)
+# ------------------------------------------------------------
+  ApplicationLB:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: test-docker-alb
+      Scheme: internet-facing
+      Subnets: [!Ref PSubnet1, !Ref PSubnet2]
+      SecurityGroups: [!Ref AlbSecurityGroup]
+      Type: application
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      VpcId: !Ref PVpcId
+      Port: 8080
+      Protocol: HTTP
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher: {HttpCode: 200-399}
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref ApplicationLB
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+# ------------------------------------------------------------
+#   Task Definition & Service
+# ------------------------------------------------------------
   TaskDefinition:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: test-docker-task
-      NetworkMode: bridge
+      Cpu: "256"
+      Memory: "512"
+      NetworkMode: awsvpc
       RequiresCompatibilities: [EC2]
-      Cpu: 256
-      Memory: 512
       ExecutionRoleArn: !Ref PExecutionRoleArn
       ContainerDefinitions:
-        - Name: app
+        - Name: web
           Image: !Ref PImageUrl
           Essential: true
           PortMappings:
@@ -87,9 +153,31 @@ Resources:
 
   ECSService:
     Type: AWS::ECS::Service
-    DependsOn: AutoScalingGroup
+    DependsOn: Listener
     Properties:
       Cluster: !Ref ECSCluster
       DesiredCount: 1
       LaunchType: EC2
       TaskDefinition: !Ref TaskDefinition
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: [!Ref PSubnet1, !Ref PSubnet2]
+          SecurityGroups: [!Ref EcsSecurityGroup]
+      LoadBalancers:
+        - ContainerName: web
+          ContainerPort: 8080
+          TargetGroupArn: !Ref TargetGroup
+
+# ------------------------------------------------------------
+Outputs:
+  AlbDNS:
+    Description: "URL to access the service"
+    Value: !GetAtt ApplicationLB.DNSName
+    Export:
+      Name: !Sub "${AWS::StackName}-AlbDNS"
+
+  ClusterName:
+    Value: !Ref ECSCluster
+    Export:
+      Name: !Sub "${AWS::StackName}-ClusterName"
