@@ -9,36 +9,30 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write          # OIDC to AWS
+  id-token: write
   contents: read
 
 env:
-  AWS_REGION:   us-east-1
-  VPC_STACK:    my-vpc-stack     # change if you use a different stack name
+  AWS_REGION:  us-east-1
+  VPC_STACK:   my-vpc-stack          # change if you use a different stack name
 
 jobs:
   deploy-vpc:
     runs-on: ubuntu-latest
 
     steps:
-      # ───────────────────────────────────────────────
-      # 1. Checkout repo
-      # ───────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ───────────────────────────────────────────────
-      # 2. Assume AWS role via OIDC
-      # ───────────────────────────────────────────────
-      - name: Configure AWS credentials
+      - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ───────────────────────────────────────────────
-      # 3. Deploy (or update) the VPC stack
-      # ───────────────────────────────────────────────
+      # ──────────────────────────────────────────────
+      # Deploy / update VPC stack
+      # ──────────────────────────────────────────────
       - name: Deploy VPC CloudFormation stack
         run: |
           aws cloudformation deploy \
@@ -47,21 +41,25 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # ───────────────────────────────────────────────
-      # 4. Save outputs into infra/outputs.txt
-      # ───────────────────────────────────────────────
-      - name: Save VPC outputs to scripts/outputs.txt
+      # ──────────────────────────────────────────────
+      # Save outputs -> infra/outputs.txt
+      # ──────────────────────────────────────────────
+      - name: Save VPC outputs to infra/outputs.txt
         run: |
-          chmod +x scripts/save-outputs.sh         # ensure script is executable
-          mkdir -p infra                           # make sure folder exists
-          scripts/save-outputs.sh ${VPC_STACK} > scripts/outputs.txt
-          echo "Wrote stack outputs to scripts/outputs.txt"
+          scripts/save-outputs.sh ${VPC_STACK}
 
-      # ───────────────────────────────────────────────
-      # 5. Upload outputs.txt as artifact (optional)
-      # ───────────────────────────────────────────────
-      - name: Upload outputs.txt
+      # ──────────────────────────────────────────────
+      # Upload outputs.txt to S3
+      # (bucket name stored in secret S3_BUCKET)
+      # ──────────────────────────────────────────────
+      - name: Upload outputs.txt to S3
+        run: |
+          aws s3 cp infra/outputs.txt s3://${{ secrets.S3_BUCKET }}/vpc/outputs.txt
+          echo "Uploaded to https://${{ secrets.S3_BUCKET }}.s3.amazonaws.com/vpc/outputs.txt"
+
+      # Optional GitHub artifact
+      - name: Upload outputs.txt as artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpc-outputs
-          path: scripts/outputs.txt
+          path: infra/outputs.txt

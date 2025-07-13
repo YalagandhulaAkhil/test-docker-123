@@ -2,6 +2,7 @@ AWSTemplateFormatVersion: "2010-09-09"
 Description: Minimal VPC with two public subnets (free-tier friendly)
 
 Resources:
+
   MyVpc:
     Type: AWS::EC2::VPC
     Properties:
@@ -55,13 +56,13 @@ Resources:
       DestinationCidrBlock: 0.0.0.0/0
       GatewayId: !Ref InternetGateway
 
-  Subnet1RouteTableAssociation:
+  Subnet1RouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet1
       RouteTableId: !Ref PublicRouteTable
 
-  Subnet2RouteTableAssociation:
+  Subnet2RouteAssoc:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
       SubnetId: !Ref PublicSubnet2
@@ -75,13 +76,13 @@ Outputs:
       Name: !Sub "${AWS::StackName}-VpcId"
 
   PublicSubnet1Id:
-    Description: Public Subnet 1 ID
+    Description: Public subnet 1 ID
     Value: !Ref PublicSubnet1
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnet1Id"
 
   PublicSubnet2Id:
-    Description: Public Subnet 2 ID
+    Description: Public subnet 2 ID
     Value: !Ref PublicSubnet2
     Export:
       Name: !Sub "${AWS::StackName}-PublicSubnet2Id"
