@@ -1,38 +1,18 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type) with ASG capacity provider – no ECS service
+Description: ECS cluster with ASG capacity provider (no service)
 
 Parameters:
-  ECSClusterName:
-    Type: String
-    Default: myhtml-site
-    Description: Name of the ECS cluster
-
-  PVpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC where EC2 instances will run
-
-  PSubnet1:
-    Type: AWS::EC2::Subnet::Id
-    Description: Public subnet 1
-
-  PSubnet2:
-    Type: AWS::EC2::Subnet::Id
-    Description: Public subnet 2
-
-  PInstanceProfileArn:
-    Type: String
-    Description: IAM instance-profile ARN for the EC2 hosts
-
-  LatestECSOptimizedAMI:
-    Description: Latest ECS Optimized AMI
-    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
-    Default: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
+  PVpcId:               { Type: AWS::EC2::VPC::Id }
+  PSubnet1:             { Type: AWS::EC2::Subnet::Id }
+  PSubnet2:             { Type: AWS::EC2::Subnet::Id }
+  PInstanceProfileArn:  { Type: String }
+  ECSClusterName:       { Type: String, Default: myhtml-site }
 
 Resources:
-  EcsHostSecurityGroup:
+  HostSG:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow inbound HTTP on port 8080
+      GroupDescription: Allow 8080
       VpcId: !Ref PVpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -40,48 +20,43 @@ Resources:
           ToPort: 8080
           CidrIp: 0.0.0.0/0
 
-  ECSCluster:
-    Type: AWS::ECS::Cluster
-    Properties:
-      ClusterName: !Ref ECSClusterName
-      ClusterSettings:
-        - Name: containerInsights
-          Value: disabled
+  LatestAMI:
+    Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
+    Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
 
-  ECSLaunchTemplate:
+  Cluster:
+    Type: AWS::ECS::Cluster
+    Properties: { ClusterName: !Ref ECSClusterName }
+
+  LaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     Properties:
       LaunchTemplateData:
         InstanceType: t3.micro
-        ImageId: !Ref LatestECSOptimizedAMI
-        IamInstanceProfile:
-          Arn: !Ref PInstanceProfileArn
-        SecurityGroupIds:
-          - !Ref EcsHostSecurityGroup
+        ImageId: !Ref LatestAMI
+        IamInstanceProfile: { Arn: !Ref PInstanceProfileArn }
+        SecurityGroupIds: [ !Ref HostSG ]
         UserData:
           Fn::Base64:
             Fn::Sub:
               - |
                 #!/bin/bash
-                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
-              - ClusterName: !Ref ECSClusterName
+                echo ECS_CLUSTER=${Name} >> /etc/ecs/ecs.config
+              - { Name: !Ref ECSClusterName }
 
-  ECSAutoScalingGroup:
+  ASG:
     Type: AWS::AutoScaling::AutoScalingGroup
     Properties:
-      VPCZoneIdentifier:
-        - !Ref PSubnet1
-        - !Ref PSubnet2
+      VPCZoneIdentifier: [ !Ref PSubnet1, !Ref PSubnet2 ]
       MinSize: 0
       MaxSize: 2
       DesiredCapacity: 1
       MixedInstancesPolicy:
         LaunchTemplate:
           LaunchTemplateSpecification:
-            LaunchTemplateId: !Ref ECSLaunchTemplate
-            Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
-          Overrides:
-            - InstanceType: t3.micro
+            LaunchTemplateId: !Ref LaunchTemplate
+            Version: !GetAtt LaunchTemplate.LatestVersionNumber
+          Overrides: [ { InstanceType: t3.micro } ]
         InstancesDistribution:
           OnDemandBaseCapacity: 0
           OnDemandPercentageAboveBaseCapacity: 0
@@ -91,44 +66,25 @@ Resources:
           Value: !Sub "ECS Host – ${ECSClusterName}"
           PropagateAtLaunch: true
 
-  AsgCapacityProvider:
+  CapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
       AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-        ManagedScaling:
-          Status: ENABLED
-          TargetCapacity: 100
+        AutoScalingGroupArn: !Ref ASG
+        ManagedScaling: { Status: ENABLED, TargetCapacity: 100 }
         ManagedTerminationProtection: DISABLED
 
-  ClusterCPAssociation:
+  Association:
     Type: AWS::ECS::ClusterCapacityProviderAssociations
     Properties:
-      Cluster: !Ref ECSCluster
-      CapacityProviders:
-        - !Ref AsgCapacityProvider
-        - FARGATE
-        - FARGATE_SPOT
+      Cluster: !Ref Cluster
+      CapacityProviders: [ !Ref CapacityProvider, FARGATE, FARGATE_SPOT ]
       DefaultCapacityProviderStrategy:
-        - Base: 0
+        - CapacityProvider: !Ref CapacityProvider
+          Base: 0
           Weight: 1
-          CapacityProvider: !Ref AsgCapacityProvider
 
 Outputs:
-  ClusterArn:
-    Description: ARN of the ECS cluster
-    Value: !Ref ECSCluster
-    Export:
-      Name: !Sub "${AWS::StackName}-ClusterArn"
-
   ClusterName:
-    Description: Name of the ECS cluster
     Value: !Ref ECSClusterName
-    Export:
-      Name: !Sub "${AWS::StackName}-ClusterName"
-
-  CapacityProviderName:
-    Description: ASG-backed Capacity Provider Name
-    Value: !Ref AsgCapacityProvider
-    Export:
-      Name: !Sub "${AWS::StackName}-CapacityProvider"
+    Export: { Name: !Sub "${AWS::StackName}-ClusterName" }

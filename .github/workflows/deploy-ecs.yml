@@ -1,0 +1,90 @@
+name: Deploy ECS Cluster (reads outputs from S3)
+
+on:
+  push:
+    paths:
+      - "infra/ecs.yml"
+      - ".github/workflows/deploy-ecs.yml"
+      - "scripts/read-s3-outputs.sh"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:      ${{ secrets.AWS_REGION }}
+  STACK_NAME:      ecs-cluster-stack
+  VPC_STACK:       my-vpc-stack
+  IAM_STACK:       my-iam-stack
+  ECR_STACK:       ecr-stack
+
+jobs:
+  deploy-ecs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      # ────────────────────────────────
+      # Download + parse outputs.txt
+      # ────────────────────────────────
+      - name: Fetch outputs from S3 and export vars
+        run: |
+          chmod +x scripts/read-s3-outputs.sh
+          export S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+
+          # Pull VPC IDs
+          VPC_ID=$(scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
+          SUBNET1=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
+          SUBNET2=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
+
+          # Pull IAM instance profile
+          PROFILE_ARN=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
+
+          # Pull ECR Repo URI (optional)
+          REPO_URI=$(scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri)
+
+          echo "VPC_ID=$VPC_ID"             >> $GITHUB_ENV
+          echo "SUBNET1=$SUBNET1"           >> $GITHUB_ENV
+          echo "SUBNET2=$SUBNET2"           >> $GITHUB_ENV
+          echo "PROFILE_ARN=$PROFILE_ARN"   >> $GITHUB_ENV
+          echo "REPO_URI=$REPO_URI"         >> $GITHUB_ENV
+
+      # Show proof (debug)
+      - name: Show downloaded outputs
+        run: |
+          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.VPC_STACK }}/outputs.txt -
+          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.IAM_STACK }}/outputs.txt -
+          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.ECR_STACK }}/outputs.txt -
+
+      - name: Echo parsed values
+        run: |
+          echo "Using:"
+          echo "  VPC_ID=$VPC_ID"
+          echo "  SUBNET1=$SUBNET1"
+          echo "  SUBNET2=$SUBNET2"
+          echo "  PROFILE_ARN=$PROFILE_ARN"
+
+      # ────────────────────────────────
+      # Deploy ECS Cluster
+      # ────────────────────────────────
+      - name: Deploy ECS CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${STACK_NAME} \
+            --template-file infra/ecs.yml \
+            --parameter-overrides \
+                PVpcId=${VPC_ID} \
+                PSubnet1=${SUBNET1} \
+                PSubnet2=${SUBNET2} \
+                PInstanceProfileArn=${PROFILE_ARN} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
