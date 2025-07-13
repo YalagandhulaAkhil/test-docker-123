@@ -14,7 +14,7 @@ permissions:
 
 env:
   AWS_REGION:     ${{ secrets.AWS_REGION }}
-  STACK_NAME:     my-iam-stack                # adjust if needed
+  STACK_NAME:     ${{ secrets.STACK_NAME }}       # e.g. my-iam-stack
 
 jobs:
   deploy-iam:
@@ -24,15 +24,12 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ───────────────────────────────────────────────
-      # Deploy / update IAM stack
-      # ───────────────────────────────────────────────
       - name: Deploy IAM CloudFormation stack
         run: |
           aws cloudformation deploy \
@@ -41,12 +38,8 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # ───────────────────────────────────────────────
-      # Save outputs + upload to S3
-      # ───────────────────────────────────────────────
-      - name: Save IAM outputs and push to S3
+      - name: Save outputs and push to S3
         run: |
-          chmod +x scripts/save-outputs.sh
           S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
           ./scripts/save-outputs.sh ${STACK_NAME}
 
