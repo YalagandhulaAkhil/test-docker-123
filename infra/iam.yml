@@ -1,23 +1,30 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: IAM roles and profiles for ECS (execution role, task role, instance profile)
+Description: "IAM roles & instance profile for ECS (Execution, Task, EC2 Host)"
 
+# ─────────────────────────────────────────────
+# Parameters (you can override names at deploy)
+# ─────────────────────────────────────────────
 Parameters:
-  ECSExecutionRoleName:
+  ExecutionRoleName:
     Type: String
-    Default: ECSExecutionRole
-  ECSTaskRoleName:
+    Default: ECSExecutionRole       # role the ECS agent uses
+  TaskRoleName:
     Type: String
-    Default: ECSTaskRole
-  ECSInstanceRoleName:
+    Default: ECSTaskRole            # role your containers assume
+  InstanceRoleName:
     Type: String
-    Default: ECSInstanceRole
+    Default: ECSInstanceRole        # role attached to EC2 hosts
 
+# ─────────────────────────────────────────────
+# Resources
+# ─────────────────────────────────────────────
 Resources:
-  # ── 1. Task Execution Role ───────────────────────────
-  ECSTaskExecutionRole:
+
+  # 1. ECS Task Execution Role
+  ECSExecutionRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Ref ECSExecutionRoleName
+      RoleName: !Ref ExecutionRoleName
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -27,11 +34,11 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 
-  # ── 2. Task Role (for app code) ───────────────────────
+  # 2. ECS Task Role (add app policies here)
   ECSTaskRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Ref ECSTaskRoleName
+      RoleName: !Ref TaskRoleName
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -39,20 +46,19 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: DemoAppAccess
+        - PolicyName: MinimalS3List
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
               - Effect: Allow
-                Action:
-                  - s3:ListBucket
+                Action: s3:ListAllMyBuckets
                 Resource: "*"
 
-  # ── 3. Instance Role / Profile for EC2 hosts ─────────
+  # 3. Instance Role for EC2 hosts
   ECSInstanceRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Ref ECSInstanceRoleName
+      RoleName: !Ref InstanceRoleName
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -62,16 +68,20 @@ Resources:
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role
 
+  # 4. Instance Profile wrapping the instance role
   ECSInstanceProfile:
     Type: AWS::IAM::InstanceProfile
     Properties:
       Roles: [ !Ref ECSInstanceRole ]
 
-# ── Outputs ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Outputs (exported for other modules)
+# ─────────────────────────────────────────────
 Outputs:
+
   ECSExecutionRoleArn:
     Description: ARN of ECS Task Execution Role
-    Value: !GetAtt ECSTaskExecutionRole.Arn
+    Value: !GetAtt ECSExecutionRole.Arn
     Export:
       Name: !Sub "${AWS::StackName}-ECSExecutionRoleArn"
 
@@ -83,6 +93,6 @@ Outputs:
 
   ECSInstanceProfileArn:
     Description: ARN of EC2 Instance Profile for ECS hosts
-    Value: !Ref ECSInstanceProfile
+    Value: !GetAtt ECSInstanceProfile.Arn
     Export:
-      Name: !Sub "${AWS::StackName}-InstanceProfileArn"
+      Name: !Sub "${AWS::StackName}-ECSInstanceProfileArn"

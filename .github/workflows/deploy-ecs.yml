@@ -6,6 +6,7 @@ on:
       - "infra/ecs.yml"
       - ".github/workflows/deploy-ecs.yml"
       - "scripts/read-s3-outputs.sh"
+      - "scripts/save-outputs.sh"
   workflow_dispatch:
 
 permissions:
@@ -18,69 +19,105 @@ env:
   VPC_STACK:    my-vpc-stack
   IAM_STACK:    my-iam-stack
   ECR_STACK:    ecr-stack
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
 
 jobs:
   deploy-ecs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+    # ─────────────────────────────────────────────
+    # 1. Checkout code
+    # ─────────────────────────────────────────────
+    - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region:     ${{ env.AWS_REGION }}
+    # ─────────────────────────────────────────────
+    # 2. AWS credentials via OIDC
+    # ─────────────────────────────────────────────
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
 
-      # ─── Download outputs and export vars ─────────────
-      - name: Fetch outputs from S3
-        run: |
-          set -euo pipefail
-          chmod +x scripts/read-s3-outputs.sh
-          export S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
+    # ─────────────────────────────────────────────
+    # 3. Fetch outputs from S3 & parse variables
+    # ─────────────────────────────────────────────
+    - name: Fetch stack outputs and export variables
+      run: |
+        set -euo pipefail
+        chmod +x scripts/read-s3-outputs.sh
 
-          echo "🔹 Downloading outputs.txt files"
-          aws s3 cp s3://${S3_BUCKET_NAME}/${VPC_STACK}/outputs.txt - || true
-          aws s3 cp s3://${S3_BUCKET_NAME}/${IAM_STACK}/outputs.txt - || true
-          aws s3 cp s3://${S3_BUCKET_NAME}/${ECR_STACK}/outputs.txt - || true
+        echo "🔹 Downloading outputs.txt files"
+        for s in ${VPC_STACK} ${IAM_STACK} ${ECR_STACK}; do
+          aws s3 cp s3://${S3_BUCKET_NAME}/${s}/outputs.txt - || echo " (missing $s)"
+        done
 
-          echo "🔹 Parsing keys"
-          VPC_ID=$(scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
-          SUBNET1=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
-          SUBNET2=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
-          PROFILE_ARN=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
-          REPO_URI=$(scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri)
+        VPC_ID=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
+        SUBNET1=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
+        SUBNET2=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
+        PROFILE_ARN=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
+        REPO_URI=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri || true)
 
-          echo "VPC_ID=$VPC_ID"
-          echo "SUBNET1=$SUBNET1"
-          echo "SUBNET2=$SUBNET2"
-          echo "PROFILE_ARN=$PROFILE_ARN"
-          echo "REPO_URI=$REPO_URI"
+        echo "🔹 Parsed:"
+        echo "  VPC_ID=$VPC_ID"
+        echo "  SUBNET1=$SUBNET1"
+        echo "  SUBNET2=$SUBNET2"
+        echo "  PROFILE_ARN=$PROFILE_ARN"
 
-          # Fail early if any required value is missing
-          for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
-            if [[ -z "${!var}" ]]; then
-              echo "❌ Missing $var – check outputs in S3." >&2
-              exit 1
-            fi
-          done
+        # Fail if mandatory vars missing
+        for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
+          [[ -z "${!var}" ]] && { echo "❌ Missing $var"; exit 1; }
+        done
 
-          echo "VPC_ID=$VPC_ID"           >> $GITHUB_ENV
-          echo "SUBNET1=$SUBNET1"         >> $GITHUB_ENV
-          echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
-          echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
+        echo "VPC_ID=$VPC_ID"           >> $GITHUB_ENV
+        echo "SUBNET1=$SUBNET1"         >> $GITHUB_ENV
+        echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
+        echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
-      # ─── Deploy ECS cluster ───────────────
-      - name: Deploy ECS stack
-        run: |
-          aws cloudformation deploy \
-            --stack-name ${STACK_NAME} \
-            --template-file infra/ecs.yml \
-            --parameter-overrides \
-                PVpcId=${VPC_ID} \
-                PSubnet1=${SUBNET1} \
-                PSubnet2=${SUBNET2} \
-                PInstanceProfileArn=${PROFILE_ARN} \
-            --capabilities CAPABILITY_NAMED_IAM \
-            --no-fail-on-empty-changeset
+    # ─────────────────────────────────────────────
+    # 4. Deploy / update ECS Cluster stack
+    # ─────────────────────────────────────────────
+    - name: Deploy ECS CloudFormation stack
+      id: deploy
+      run: |
+        set -e
+        aws cloudformation deploy \
+          --stack-name ${STACK_NAME} \
+          --template-file infra/ecs.yml \
+          --parameter-overrides \
+              PVpcId=${VPC_ID} \
+              PSubnet1=${SUBNET1} \
+              PSubnet2=${SUBNET2} \
+              PInstanceProfileArn=${PROFILE_ARN} \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --no-fail-on-empty-changeset
+
+    # ─────────────────────────────────────────────
+    # 5. On failure, dump recent CFN events
+    # ─────────────────────────────────────────────
+    - name: Dump CFN events on failure
+      if: failure() && steps.deploy.outcome == 'failure'
+      run: |
+        aws cloudformation describe-stack-events \
+          --stack-name ${STACK_NAME} --max-items 30 --output table
+
+    # ─────────────────────────────────────────────
+    # 6. Save ECS outputs & upload to S3 (optional)
+    # ─────────────────────────────────────────────
+    - name: Save ECS outputs and push to S3
+      if: success()
+      run: |
+        chmod +x scripts/save-outputs.sh
+        S3_BUCKET_NAME=${S3_BUCKET_NAME} \
+        ./scripts/save-outputs.sh ${STACK_NAME}
+
+    # ─────────────────────────────────────────────
+    # 7. Attach ECS outputs.txt as artifact
+    # ─────────────────────────────────────────────
+    - name: Upload outputs.txt artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ecs-outputs
+        path: infra/outputs.txt
