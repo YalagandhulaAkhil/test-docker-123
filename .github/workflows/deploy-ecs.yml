@@ -1,4 +1,4 @@
-name: Deploy ECS Cluster (reads outputs from S3)
+name: Deploy ECS Cluster (read outputs from S3)
 
 on:
   push:
@@ -13,11 +13,11 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:      ${{ secrets.AWS_REGION }}
-  STACK_NAME:      ecs-cluster-stack
-  VPC_STACK:       my-vpc-stack
-  IAM_STACK:       my-iam-stack
-  ECR_STACK:       ecr-stack
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  STACK_NAME:   ecs-cluster-stack
+  VPC_STACK:    my-vpc-stack
+  IAM_STACK:    my-iam-stack
+  ECR_STACK:    ecr-stack
 
 jobs:
   deploy-ecs:
@@ -33,50 +33,46 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ────────────────────────────────
-      # Download + parse outputs.txt
-      # ────────────────────────────────
-      - name: Fetch outputs from S3 and export vars
+      # ─── Download outputs and export vars ─────────────
+      - name: Fetch outputs from S3
         run: |
+          set -euo pipefail
           chmod +x scripts/read-s3-outputs.sh
           export S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }}
 
-          # Pull VPC IDs
+          echo "🔹 Downloading outputs.txt files"
+          aws s3 cp s3://${S3_BUCKET_NAME}/${VPC_STACK}/outputs.txt - || true
+          aws s3 cp s3://${S3_BUCKET_NAME}/${IAM_STACK}/outputs.txt - || true
+          aws s3 cp s3://${S3_BUCKET_NAME}/${ECR_STACK}/outputs.txt - || true
+
+          echo "🔹 Parsing keys"
           VPC_ID=$(scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
           SUBNET1=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
           SUBNET2=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
-
-          # Pull IAM instance profile
           PROFILE_ARN=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
-
-          # Pull ECR Repo URI (optional)
           REPO_URI=$(scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri)
 
-          echo "VPC_ID=$VPC_ID"             >> $GITHUB_ENV
-          echo "SUBNET1=$SUBNET1"           >> $GITHUB_ENV
-          echo "SUBNET2=$SUBNET2"           >> $GITHUB_ENV
-          echo "PROFILE_ARN=$PROFILE_ARN"   >> $GITHUB_ENV
-          echo "REPO_URI=$REPO_URI"         >> $GITHUB_ENV
+          echo "VPC_ID=$VPC_ID"
+          echo "SUBNET1=$SUBNET1"
+          echo "SUBNET2=$SUBNET2"
+          echo "PROFILE_ARN=$PROFILE_ARN"
+          echo "REPO_URI=$REPO_URI"
 
-      # Show proof (debug)
-      - name: Show downloaded outputs
-        run: |
-          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.VPC_STACK }}/outputs.txt -
-          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.IAM_STACK }}/outputs.txt -
-          aws s3 cp s3://${{ secrets.S3_BUCKET_NAME }}/${{ env.ECR_STACK }}/outputs.txt -
+          # Fail early if any required value is missing
+          for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
+            if [[ -z "${!var}" ]]; then
+              echo "❌ Missing $var – check outputs in S3." >&2
+              exit 1
+            fi
+          done
 
-      - name: Echo parsed values
-        run: |
-          echo "Using:"
-          echo "  VPC_ID=$VPC_ID"
-          echo "  SUBNET1=$SUBNET1"
-          echo "  SUBNET2=$SUBNET2"
-          echo "  PROFILE_ARN=$PROFILE_ARN"
+          echo "VPC_ID=$VPC_ID"           >> $GITHUB_ENV
+          echo "SUBNET1=$SUBNET1"         >> $GITHUB_ENV
+          echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
+          echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
-      # ────────────────────────────────
-      # Deploy ECS Cluster
-      # ────────────────────────────────
-      - name: Deploy ECS CloudFormation stack
+      # ─── Deploy ECS cluster ───────────────
+      - name: Deploy ECS stack
         run: |
           aws cloudformation deploy \
             --stack-name ${STACK_NAME} \
