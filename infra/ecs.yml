@@ -63,8 +63,7 @@ Resources:
     Properties:
       LaunchTemplateData:
         ImageId: !Ref LatestECSAMI
-        InstanceType: t3.micro
-        # ← No KeyName => no SSH key/pem
+        InstanceType: t3.micro           # adjust as needed
         IamInstanceProfile: { Arn: !Ref Ec2InstanceProfileArn }
         BlockDeviceMappings:
           - DeviceName: /dev/xvda
@@ -93,16 +92,19 @@ Resources:
         Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
       Tags:
         - Key: Name
-          PropagateAtLaunch: true
           Value: !Sub "ECS Instance - ${ECSClusterName}"
+          PropagateAtLaunch: true
 
-  ## Capacity provider
+  ## Capacity provider (custom name; must not start with aws/ecs/fargate)
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
+      Name: !Sub "${ECSClusterName}-cp"        # <-- VALID NAME
       AutoScalingGroupProvider:
         AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-        ManagedScaling: { Status: ENABLED, TargetCapacity: 100 }
+        ManagedScaling:
+          Status: ENABLED
+          TargetCapacity: 100
         ManagedTerminationProtection: DISABLED
 
   ## Associate capacity provider with cluster
