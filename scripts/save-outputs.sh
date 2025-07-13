@@ -1,30 +1,31 @@
 #!/usr/bin/env bash
-#
-# save-outputs.sh  –  Collect CloudFormation stack outputs into outputs.txt
-# Usage:
-#   AWS_DEFAULT_REGION=us-east-1 ./save-outputs.sh my-vpc-stack my-iam-stack ecr-stack ecs-cluster-stack
-#   (or just run without args to dump ALL stacks in the account)
+# scripts/save-outputs.sh
+# Usage: ./scripts/save-outputs.sh stack1 stack2 …
 
-OUTFILE="outputs.txt"
-: > "$OUTFILE"  # truncate
+set -euo pipefail
 
-# If stack names are supplied as arguments, use them; otherwise query all stacks
-if [ "$#" -gt 0 ]; then
-  stacks=("$@")
-else
-  mapfile -t stacks < <(aws cloudformation list-stacks \
-      --stack-status-filter CREATE_COMPLETE UPDATE_COMPLETE \
-      --query "StackSummaries[].StackName" --output text)
-fi
+OUTFILE="infra/outputs.txt"
+mkdir -p infra
+: > "$OUTFILE"
 
-for stack in "${stacks[@]}"; do
-  echo "### $stack" >> "$OUTFILE"
+for STACK in "$@"; do
+  STATUS=$(aws cloudformation describe-stacks --stack-name "$STACK" \
+            --query "Stacks[0].StackStatus" --output text 2>/dev/null || true)
 
-  aws cloudformation describe-stacks --stack-name "$stack" \
-    --query "Stacks[0].Outputs[]" --output text |
-    awk '{printf "  %s = %s\n",$1,$3}' >> "$OUTFILE"
+  if [[ -z "$STATUS" ]]; then
+    echo "### $STACK (stack not found)" >> "$OUTFILE"
+    echo "" >> "$OUTFILE"
+    continue
+  fi
 
-  echo >> "$OUTFILE"
+  echo "### $STACK ($STATUS)" >> "$OUTFILE"
+
+  aws cloudformation describe-stacks --stack-name "$STACK" \
+    --query "Stacks[0].Outputs[]" \
+    --output text |
+    awk '{printf "  %s = %s\n",$1,$3}' >> "$OUTFILE" || true
+
+  echo "" >> "$OUTFILE"
 done
 
 echo "Outputs written to $OUTFILE"
