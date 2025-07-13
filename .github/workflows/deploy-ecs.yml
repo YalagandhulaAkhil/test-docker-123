@@ -6,7 +6,6 @@ on:
       - "infra/ecs.yml"
       - ".github/workflows/deploy-ecs.yml"
       - "scripts/save-outputs.sh"
-      - "scripts/read-s3-outputs.sh"
   workflow_dispatch:
 
 permissions:
@@ -25,79 +24,66 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # 1 ─ Check out code
     - uses: actions/checkout@v4
 
-    # 2 ─ Configure AWS credentials (OIDC)
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region:     ${{ env.AWS_REGION }}
 
-    # 3 ─ Download & parse outputs
+    # ── Extract outputs (robust to spaces) ──
     - name: Read outputs from previous stacks
       run: |
         set -euo pipefail
+        aws s3 cp s3://${S3_BUCKET_NAME}/${VPC_STACK}/outputs.txt vpc.txt
+        aws s3 cp s3://${S3_BUCKET_NAME}/${IAM_STACK}/outputs.txt iam.txt
 
-        echo "📥 Downloading outputs.txt files"
-        aws s3 cp s3://${S3_BUCKET_NAME}/${VPC_STACK}/outputs.txt vpc_outputs.txt
-        aws s3 cp s3://${S3_BUCKET_NAME}/${IAM_STACK}/outputs.txt iam_outputs.txt
+        extract() { grep -E "^ *$1 *=" "$2" | cut -d '=' -f2 | xargs; }
 
-        echo "🔍 vpc_outputs.txt";  cat vpc_outputs.txt
-        echo "🔍 iam_outputs.txt";  cat iam_outputs.txt
-
-        # Allow optional spaces around '=' and trim whitespace
-        VPC_ID=$(grep -E '^ *VpcId *=' vpc_outputs.txt | cut -d '=' -f2 | xargs)
-        SUBNET1=$(grep -E '^ *PublicSubnet1Id *=' vpc_outputs.txt | cut -d '=' -f2 | xargs)
-        SUBNET2=$(grep -E '^ *PublicSubnet2Id *=' vpc_outputs.txt | cut -d '=' -f2 | xargs)
-        PROFILE_ARN=$(grep -E '^ *ECSInstanceProfileArn *=' iam_outputs.txt | cut -d '=' -f2 | xargs)
+        VPC_ID=$(extract VpcId vpc.txt)
+        SUBNET1=$(extract PublicSubnet1Id vpc.txt)
+        SUBNET2=$(extract PublicSubnet2Id vpc.txt)
+        PROFILE_ARN=$(extract ECSInstanceProfileArn iam.txt)
 
         for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
-          if [[ -z "${!var}" ]]; then
-            echo "❌ Missing or empty value for $var"
-            exit 1
-          fi
+          [[ -z "${!var}" ]] && { echo "❌ $var missing"; exit 1; }
         done
-
-        echo "✅ Extracted:"
-        echo "  VPC_ID=$VPC_ID"
-        echo "  SUBNET1=$SUBNET1"
-        echo "  SUBNET2=$SUBNET2"
-        echo "  PROFILE_ARN=$PROFILE_ARN"
 
         echo "VPC_ID=$VPC_ID"           >> $GITHUB_ENV
         echo "SUBNET1=$SUBNET1"         >> $GITHUB_ENV
         echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
         echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
-    # 4 ─ Deploy cluster
+    # ── Deploy ECS cluster (no KeyName) ──
     - name: Deploy ECS CloudFormation stack
       id: deploy
       run: |
         set -e
-        SubnetCSV="${SUBNET1},${SUBNET2}"
         aws cloudformation deploy \
           --stack-name ${STACK_NAME} \
           --template-file infra/ecs.yml \
           --parameter-overrides \
               ECSClusterName=html-ecs \
               VpcId=${VPC_ID} \
-              SubnetIds="${SubnetCSV}" \
+              SubnetIds="${SUBNET1},${SUBNET2}" \
               Ec2InstanceProfileArn=${PROFILE_ARN} \
-              KeyName=${{ secrets.AAA }} \
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
 
-    # 5 ─ Dump events on failure
     - name: Dump CFN events on failure
       if: failure() && steps.deploy.outcome == 'failure'
-      run: |
-        aws cloudformation describe-stack-events \
-          --stack-name ${STACK_NAME} --max-items 30 --output table
+      run: aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --max-items 30 --output table
 
-    # 6 ─ Save ECS outputs & push to S3
     - name: Save ECS outputs to S3
       if: success()
       run: |
-        chmod +x scripts/sav
+        chmod +x scripts/save-outputs.sh
+        S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} ./scripts/save-outputs.sh ${STACK_NAME}
+
+    - name: Upload outputs.txt artifact
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ecs-outputs
+        path: infra/outputs.txt
