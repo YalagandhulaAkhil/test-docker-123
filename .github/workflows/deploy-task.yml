@@ -37,7 +37,7 @@ jobs:
     - name: Fetch outputs from S3
       run: |
         set -euo pipefail
-        for s in ${IAM_STACK} ${ECR_STACK} ${ECS_CLUSTER_STACK}; do
+        for s in ${IAM_STACK} ${ECR_STACK} ${ECS_CLUSTER_STACK} ${VPC_STACK}; do
           aws s3 cp s3://${S3_BUCKET_NAME}/${s}/outputs.txt ${s}.txt
           cat ${s}.txt
         done
@@ -54,8 +54,14 @@ jobs:
         # from ECS cluster stack
         CLUSTER_NAME=$(extract ClusterName           ${ECS_CLUSTER_STACK}.txt)
         CAP_PROVIDER=$(extract CapacityProviderName  ${ECS_CLUSTER_STACK}.txt)
+        SG_ID=$(extract EC2SecurityGroupId           ${ECS_CLUSTER_STACK}.txt)
 
-        for var in EXEC_ROLE TASK_ROLE IMAGE_URI CLUSTER_NAME CAP_PROVIDER; do
+        # from VPC stack
+        SUBNET1=$(extract PublicSubnet1Id ${VPC_STACK}.txt)
+        SUBNET2=$(extract PublicSubnet2Id ${VPC_STACK}.txt)
+        SUBNETS="$SUBNET1,$SUBNET2"
+
+        for var in EXEC_ROLE TASK_ROLE IMAGE_URI CLUSTER_NAME CAP_PROVIDER SG_ID SUBNETS; do
           [[ -z "${!var}" ]] && { echo "❌ $var missing"; exit 1; }
         done
 
@@ -64,6 +70,8 @@ jobs:
         echo "IMAGE_URI=$IMAGE_URI"           >> $GITHUB_ENV
         echo "CLUSTER_NAME=$CLUSTER_NAME"     >> $GITHUB_ENV
         echo "CAP_PROVIDER=$CAP_PROVIDER"     >> $GITHUB_ENV
+        echo "EC2SecurityGroupId=$SG_ID"      >> $GITHUB_ENV
+        echo "SubnetIds=$SUBNETS"             >> $GITHUB_ENV
 
     - name: Deploy task/service stack
       id: deploy
@@ -78,6 +86,8 @@ jobs:
               ImageUri=${IMAGE_URI} \
               ECSExecutionRoleArn=${EXEC_ROLE} \
               ECSTaskRoleArn=${TASK_ROLE} \
+              EC2SecurityGroupId=${EC2SecurityGroupId} \
+              SubnetIds=${SubnetIds} \
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
 
