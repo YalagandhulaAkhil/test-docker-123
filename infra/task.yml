@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Register task definition and create ECS service (EC2 launch type)"
+Description: "Register task definition and create ECS service (EC2 hosts via capacity provider)"
 
 ########################################
 # PARAMETERS (supplied by deploy-task.yml)
@@ -30,9 +30,9 @@ Resources:
     Properties:
       Family: !Sub "${ClusterName}-task"
       RequiresCompatibilities: [EC2]
-      NetworkMode: bridge                # matches your EC2 hosts
-      Cpu:   "1024"                      # 1 vCPU
-      Memory: "1024"                     # 1 GiB
+      NetworkMode: bridge
+      Cpu:   "1024"          # 1 vCPU
+      Memory: "1024"         # 1 GiB
       ExecutionRoleArn: !Ref ECSExecutionRoleArn
       TaskRoleArn:      !Ref ECSTaskRoleArn
       ContainerDefinitions:
@@ -59,18 +59,17 @@ Resources:
       ServiceName: !Sub "${ClusterName}-svc"
       Cluster:      !Ref ClusterName
       DesiredCount: 1
-      CapacityProviderStrategy:
+      CapacityProviderStrategy:            # ← uses your ASG-backed provider
         - CapacityProvider: !Ref CapacityProviderName
           Weight: 1
-      LaunchType: EC2
       TaskDefinition: !Ref TaskDef
-      NetworkConfiguration:    # enables awsvpc ENI attach even with bridge mode
+      NetworkConfiguration:
         AwsvpcConfiguration:
-          Subnets: !Ref SubnetIds
+          Subnets:        !Ref SubnetIds
           SecurityGroups: [ !Ref EC2SecurityGroupId ]
           AssignPublicIp: ENABLED
       DeploymentConfiguration:
-        MaximumPercent: 200
+        MaximumPercent:        200
         MinimumHealthyPercent: 50
 
 ########################################
