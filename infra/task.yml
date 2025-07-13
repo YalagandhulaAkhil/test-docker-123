@@ -1,8 +1,10 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Registers a task definition and ECS service (EC2 launch type)"
+Description: "Register task definition and create ECS service (EC2 launch type)"
 
+########################################
+# PARAMETERS (supplied by deploy-task.yml)
+########################################
 Parameters:
-  # — values fed from GitHub Actions —
   ClusterName:
     Type: String
   CapacityProviderName:
@@ -13,53 +15,73 @@ Parameters:
     Type: String
   ECSTaskRoleArn:
     Type: String
+  SubnetIds:                 # comma-separated list
+    Type: CommaDelimitedList
+  EC2SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
 
+########################################
+# RESOURCES
+########################################
 Resources:
-  AppTaskDefinition:
+
+  TaskDef:
     Type: AWS::ECS::TaskDefinition
     Properties:
       Family: !Sub "${ClusterName}-task"
       RequiresCompatibilities: [EC2]
-      NetworkMode: bridge
-      Cpu: "256"
-      Memory: "512"
+      NetworkMode: bridge                # matches your EC2 hosts
+      Cpu:   "1024"                      # 1 vCPU
+      Memory: "1024"                     # 1 GiB
       ExecutionRoleArn: !Ref ECSExecutionRoleArn
-      TaskRoleArn: !Ref ECSTaskRoleArn
+      TaskRoleArn:      !Ref ECSTaskRoleArn
       ContainerDefinitions:
-        - Name: html-app
+        - Name: html-site
           Image: !Ref ImageUri
           Essential: true
+          Cpu: 1024
+          Memory: 1024
           PortMappings:
             - ContainerPort: 8080
               HostPort: 8080
+              Protocol: tcp
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group: !Sub "/ecs/${ClusterName}"
+              awslogs-group:  !Sub "/ecs/${ClusterName}"
               awslogs-region: !Ref "AWS::Region"
-              awslogs-stream-prefix: task
+              awslogs-stream-prefix: site
 
-  AppService:
+  Service:
     Type: AWS::ECS::Service
+    DependsOn: TaskDef
     Properties:
       ServiceName: !Sub "${ClusterName}-svc"
-      Cluster: !Ref ClusterName
+      Cluster:      !Ref ClusterName
       DesiredCount: 1
       CapacityProviderStrategy:
         - CapacityProvider: !Ref CapacityProviderName
           Weight: 1
-      TaskDefinition: !Ref AppTaskDefinition
+      LaunchType: EC2
+      TaskDefinition: !Ref TaskDef
+      NetworkConfiguration:    # enables awsvpc ENI attach even with bridge mode
+        AwsvpcConfiguration:
+          Subnets: !Ref SubnetIds
+          SecurityGroups: [ !Ref EC2SecurityGroupId ]
+          AssignPublicIp: ENABLED
       DeploymentConfiguration:
         MaximumPercent: 200
         MinimumHealthyPercent: 50
 
+########################################
+# OUTPUTS
+########################################
 Outputs:
   ServiceName:
-    Description: ECS service name
-    Value: !GetAtt AppService.Name
-    Export:
-      Name: !Sub "${AWS::StackName}-ServiceName"
+    Description: Name of ECS service
+    Value: !GetAtt Service.Name
+    Export: { Name: !Sub "${AWS::StackName}-ServiceName" }
 
   TaskDefArn:
-    Description: ARN of task definition
-    Value: !Ref AppTaskDefinition
+    Description: ARN of the task definition
+    Value: !Ref TaskDef
