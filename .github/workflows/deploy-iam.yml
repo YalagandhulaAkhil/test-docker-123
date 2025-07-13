@@ -1,23 +1,20 @@
-name: Deploy IAM Roles (Execution / Task / Instance)
+name: Deploy IAM Stack
 
 on:
-  # Re-run whenever the IAM template or this workflow changes
   push:
-    branches: [main]
     paths:
       - "infra/iam.yml"
       - ".github/workflows/deploy-iam.yml"
-
-  # Manual trigger from the Actions tab
+      - "scripts/save-outputs.sh"
   workflow_dispatch:
 
 permissions:
-  id-token: write    # OIDC to AWS
+  id-token: write
   contents: read
 
 env:
-  AWS_REGION: us-east-1
-  IAM_STACK: my-iam-stack          # stack name you want in CloudFormation
+  AWS_REGION:     ${{ secrets.AWS_REGION }}
+  STACK_NAME:     my-iam-stack                # adjust if needed
 
 jobs:
   deploy-iam:
@@ -30,13 +27,31 @@ jobs:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
-          aws-region: ${{ env.AWS_REGION }}
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
 
+      # ───────────────────────────────────────────────
+      # Deploy / update IAM stack
+      # ───────────────────────────────────────────────
       - name: Deploy IAM CloudFormation stack
         run: |
           aws cloudformation deploy \
-            --stack-name ${{ env.IAM_STACK }} \
+            --stack-name ${STACK_NAME} \
             --template-file infra/iam.yml \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
+
+      # ───────────────────────────────────────────────
+      # Save outputs + upload to S3
+      # ───────────────────────────────────────────────
+      - name: Save IAM outputs and push to S3
+        run: |
+          chmod +x scripts/save-outputs.sh
+          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
+          ./scripts/save-outputs.sh ${STACK_NAME}
+
+      - name: Upload outputs.txt as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iam-outputs
+          path: infra/outputs.txt
