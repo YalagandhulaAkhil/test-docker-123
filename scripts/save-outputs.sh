@@ -1,14 +1,12 @@
 #!/usr/bin/env bash
-# Collects all outputs for a stack and uploads to S3
+# save-outputs.sh <stack-name>
+#  - writes infra/outputs.txt
+#  - uploads it to s3://$S3_BUCKET_NAME/<stack-name>/outputs.txt
+
 set -euo pipefail
 
 STACK_NAME=$1
-S3_BUCKET_NAME=${S3_BUCKET_NAME:-}
-
-if [[ -z "$S3_BUCKET_NAME" ]]; then
-  echo "❌  S3_BUCKET_NAME not provided"
-  exit 1
-fi
+: "${S3_BUCKET_NAME:?❌  S3_BUCKET_NAME not set}"
 
 mkdir -p infra
 OUTFILE="infra/outputs.txt"
@@ -22,7 +20,9 @@ aws cloudformation describe-stacks \
   --output text |
   awk '{printf "  %s = %s\n",$1,$2}' >> "$OUTFILE"
 
-echo "✅  Outputs written to $OUTFILE"
+echo "🔹 Local outputs.txt"
+cat "$OUTFILE"
 
-aws s3 cp "$OUTFILE" "s3://${S3_BUCKET_NAME}/${STACK_NAME}/outputs.txt"
-echo "✅  Uploaded to s3://${S3_BUCKET_NAME}/${STACK_NAME}/outputs.txt"
+DEST="s3://${S3_BUCKET_NAME}/${STACK_NAME}/outputs.txt"
+aws s3 cp "$OUTFILE" "$DEST"
+echo "✅  Uploaded $DEST"

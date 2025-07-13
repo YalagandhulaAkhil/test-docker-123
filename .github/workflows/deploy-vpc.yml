@@ -13,23 +13,26 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:   ${{ secrets.AWS_REGION }}
-  STACK_NAME:   ${{ secrets.STACK_NAME }}      # e.g. my-vpc-stack
+  AWS_REGION:     ${{ secrets.AWS_REGION }}
+  STACK_NAME:     my-vpc-stack               # <- keep this fixed
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
 
 jobs:
   deploy-vpc:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # 1. Checkout repository
+      - uses: actions/checkout@v4
 
+      # 2. Configure AWS credentials via OIDC
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
+      # 3. Deploy or update the VPC stack
       - name: Deploy VPC CloudFormation stack
         run: |
           aws cloudformation deploy \
@@ -38,14 +41,15 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # ─── Ensure script is executable, then run it ───
-      - name: Save outputs and push to S3
+      # 4. Collect outputs and push to S3
+      - name: Save outputs.txt and upload to S3
         run: |
           chmod +x scripts/save-outputs.sh
-          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
+          S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} \
           ./scripts/save-outputs.sh ${STACK_NAME}
 
-      - name: Upload outputs.txt as artifact
+      # 5. Attach outputs.txt as GitHub artifact (optional)
+      - name: Upload outputs.txt artifact
         uses: actions/upload-artifact@v4
         with:
           name: vpc-outputs
