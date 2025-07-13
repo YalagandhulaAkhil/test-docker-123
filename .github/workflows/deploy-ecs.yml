@@ -18,7 +18,6 @@ env:
   STACK_NAME:   ecs-cluster-stack
   VPC_STACK:    my-vpc-stack
   IAM_STACK:    my-iam-stack
-  ECR_STACK:    ecr-stack
   S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
 
 jobs:
@@ -26,20 +25,24 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+    # 1. Checkout
     - uses: actions/checkout@v4
 
+    # 2. AWS creds via OIDC
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region:     ${{ env.AWS_REGION }}
 
+    # 3. Pull outputs from S3
     - name: Fetch stack outputs and export variables
       run: |
         set -euo pipefail
         chmod +x scripts/read-s3-outputs.sh
         export S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }}
 
+        echo "🔹 Downloading outputs.txt files"
         for S in ${VPC_STACK} ${IAM_STACK}; do
           aws s3 cp s3://${S3_BUCKET_NAME}/${S}/outputs.txt - || echo "(missing $S)"
         done
@@ -58,6 +61,7 @@ jobs:
         echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
         echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
+    # 4. Deploy Cluster
     - name: Deploy ECS CloudFormation stack
       id: deploy
       run: |
@@ -69,18 +73,20 @@ jobs:
           --parameter-overrides \
               ECSClusterName=html-ecs \
               VpcId=${VPC_ID} \
-              SubnetIds=${SubnetCSV} \
+              SubnetIds="${SubnetCSV}" \
               Ec2InstanceProfileArn=${PROFILE_ARN} \
-              KeyName=${{ secrets.EC2_KEY_NAME }} \
+              KeyName=${{ secrets.AAA }} \
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
 
+    # 5. Dump events on failure
     - name: Dump CFN events on failure
       if: failure() && steps.deploy.outcome == 'failure'
       run: |
         aws cloudformation describe-stack-events \
           --stack-name ${STACK_NAME} --max-items 30 --output table
 
+    # 6. Push ECS outputs to S3
     - name: Save ECS outputs and push to S3
       if: success()
       run: |
@@ -88,6 +94,7 @@ jobs:
         S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} \
         ./scripts/save-outputs.sh ${STACK_NAME}
 
+    # 7. Upload artifact
     - name: Upload outputs.txt artifact
       if: success()
       uses: actions/upload-artifact@v4
