@@ -1,45 +1,62 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type) with ASG capacity provider – no ECS service
+Description: ECS cluster (EC2 launch type) with ASG capacity provider – no service
 
+# ─────────────────────────────────────────────
+# PARAMETERS (all overridable from workflow)
+# ─────────────────────────────────────────────
 Parameters:
   ECSClusterName:
     Type: String
-    Default: myhtml-site
+    Default: html-cluster
     Description: Name of the ECS cluster
 
-  PVpcId:
-    Type: AWS::EC2::VPC::Id
-    Description: VPC where EC2 instances will run
-
-  PSubnet1:
-    Type: AWS::EC2::Subnet::Id
-    Description: Public subnet 1
-
-  PSubnet2:
-    Type: AWS::EC2::Subnet::Id
-    Description: Public subnet 2
-
-  PInstanceProfileArn:
+  VpcId:
     Type: String
-    Description: IAM instance-profile ARN for the EC2 hosts
+    Default: ""
+    AllowedPattern: "^(?:vpc-[0-9a-f]{8,17}|)$"
+    Description: Existing VPC ID (leave blank to fail fast if not provided)
 
-  LatestECSOptimizedAMI:
-    Description: Latest ECS Optimized AMI
+  SubnetIds:
+    Type: CommaDelimitedList
+    Default: ""
+    Description: Comma-separated list of two public subnets
+
+  Ec2InstanceProfileArn:
+    Type: String
+    Description: ARN of the instance-profile for EC2 hosts
+
+  KeyName:                      # ← optional SSH key pair for debug
+    Type: String
+    Default: ""
+    Description: (Optional) EC2 key pair for SSH access
+
+  LatestECSAMI:
     Type: "AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>"
     Default: "/aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id"
+    Description: AL2023 ECS-optimised AMI
 
+# ─────────────────────────────────────────────
+# SECURITY GROUP (port 8080 open)
+# ─────────────────────────────────────────────
 Resources:
-  EcsHostSecurityGroup:
+  Ec2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow inbound HTTP on port 8080
-      VpcId: !Ref PVpcId
+      GroupDescription: ECS EC2 host SG (port 8080)
+      VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
           CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIpv6: "::/0"
 
+# ─────────────────────────────────────────────
+# ECS CLUSTER
+# ─────────────────────────────────────────────
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -48,59 +65,59 @@ Resources:
         - Name: containerInsights
           Value: disabled
 
+# ─────────────────────────────────────────────
+# LAUNCH TEMPLATE
+# ─────────────────────────────────────────────
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     DependsOn: ECSCluster
     Properties:
       LaunchTemplateData:
+        ImageId: !Ref LatestECSAMI
         InstanceType: t3.micro
-        ImageId: !Ref LatestECSOptimizedAMI
+        KeyName: !If [HasKey, !Ref KeyName, !Ref "AWS::NoValue"]
         IamInstanceProfile:
-          Arn: !Ref PInstanceProfileArn
+          Arn: !Ref Ec2InstanceProfileArn
         NetworkInterfaces:
-          - AssociatePublicIpAddress: true
-            DeviceIndex: 0
+          - DeviceIndex: 0
+            AssociatePublicIpAddress: true
             DeleteOnTermination: true
-            Groups:
-              - !Ref EcsHostSecurityGroup
+            Groups: [ !Ref Ec2SecurityGroup ]
         BlockDeviceMappings:
-          - DeviceName: "/dev/xvda"
+          - DeviceName: /dev/xvda
             Ebs:
               VolumeSize: 30
         UserData:
-          Fn::Base64:
-            Fn::Sub:
-              - |
-                #!/bin/bash
-                echo ECS_CLUSTER=${ClusterName} >> /etc/ecs/ecs.config
-              - ClusterName: !Ref ECSClusterName
+          Fn::Base64: !Sub |
+            #!/bin/bash
+            echo ECS_CLUSTER=${ECSClusterName} >> /etc/ecs/ecs.config
+      LaunchTemplateName: !Sub "${ECSClusterName}-lt"
 
+Conditions:
+  HasKey: !Not [ !Equals [ !Ref KeyName, "" ] ]
+
+# ─────────────────────────────────────────────
+# AUTO SCALING GROUP
+# ─────────────────────────────────────────────
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: ECSCluster
     Properties:
-      VPCZoneIdentifier:
-        - !Ref PSubnet1
-        - !Ref PSubnet2
+      VPCZoneIdentifier: !Ref SubnetIds
       MinSize: 0
       MaxSize: 2
       DesiredCapacity: 0
-      MixedInstancesPolicy:
-        LaunchTemplate:
-          LaunchTemplateSpecification:
-            LaunchTemplateId: !Ref ECSLaunchTemplate
-            Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
-          Overrides:
-            - InstanceType: t3.micro
-        InstancesDistribution:
-          OnDemandBaseCapacity: 0
-          OnDemandPercentageAboveBaseCapacity: 0
-          SpotAllocationStrategy: lowest-price
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
       Tags:
         - Key: Name
           Value: !Sub "ECS Instance - ${ECSClusterName}"
           PropagateAtLaunch: true
 
+# ─────────────────────────────────────────────
+# CAPACITY PROVIDER + ASSOCIATION
+# ─────────────────────────────────────────────
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
@@ -125,6 +142,9 @@ Resources:
           Weight: 1
           CapacityProvider: !Ref AsgCapacityProvider
 
+# ─────────────────────────────────────────────
+# OUTPUTS
+# ─────────────────────────────────────────────
 Outputs:
   ClusterArn:
     Description: ARN of the ECS cluster
@@ -139,7 +159,7 @@ Outputs:
       Name: !Sub "${AWS::StackName}-ClusterName"
 
   CapacityProviderName:
-    Description: ASG-backed Capacity Provider Name
+    Description: Name of the ASG capacity provider
     Value: !Ref AsgCapacityProvider
     Export:
       Name: !Sub "${AWS::StackName}-CapacityProvider"

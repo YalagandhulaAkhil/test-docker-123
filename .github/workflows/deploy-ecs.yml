@@ -38,23 +38,16 @@ jobs:
       run: |
         set -euo pipefail
         chmod +x scripts/read-s3-outputs.sh
+        export S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }}
 
-        echo "🔹 Downloading outputs.txt files"
-        for s in ${VPC_STACK} ${IAM_STACK} ${ECR_STACK}; do
-          aws s3 cp s3://${S3_BUCKET_NAME}/${s}/outputs.txt - || echo " (missing $s)"
+        for S in ${VPC_STACK} ${IAM_STACK}; do
+          aws s3 cp s3://${S3_BUCKET_NAME}/${S}/outputs.txt - || echo "(missing $S)"
         done
 
-        VPC_ID=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
-        SUBNET1=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
-        SUBNET2=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
-        PROFILE_ARN=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
-        REPO_URI=$(S3_BUCKET_NAME=$S3_BUCKET_NAME scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri || true)
-
-        echo "🔹 Parsed:"
-        echo "  VPC_ID=$VPC_ID"
-        echo "  SUBNET1=$SUBNET1"
-        echo "  SUBNET2=$SUBNET2"
-        echo "  PROFILE_ARN=$PROFILE_ARN"
+        VPC_ID=$(scripts/read-s3-outputs.sh ${VPC_STACK} VpcId)
+        SUBNET1=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet1Id)
+        SUBNET2=$(scripts/read-s3-outputs.sh ${VPC_STACK} PublicSubnet2Id)
+        PROFILE_ARN=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSInstanceProfileArn)
 
         for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
           [[ -z "${!var}" ]] && { echo "❌ Missing $var"; exit 1; }
@@ -69,14 +62,16 @@ jobs:
       id: deploy
       run: |
         set -e
+        SubnetCSV="${SUBNET1},${SUBNET2}"
         aws cloudformation deploy \
           --stack-name ${STACK_NAME} \
           --template-file infra/ecs.yml \
           --parameter-overrides \
-              PVpcId=${VPC_ID} \
-              PSubnet1=${SUBNET1} \
-              PSubnet2=${SUBNET2} \
-              PInstanceProfileArn=${PROFILE_ARN} \
+              ECSClusterName=html-ecs \
+              VpcId=${VPC_ID} \
+              SubnetIds=${SubnetCSV} \
+              Ec2InstanceProfileArn=${PROFILE_ARN} \
+              KeyName=${{ secrets.EC2_KEY_NAME }} \
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
 
@@ -90,7 +85,7 @@ jobs:
       if: success()
       run: |
         chmod +x scripts/save-outputs.sh
-        S3_BUCKET_NAME=${S3_BUCKET_NAME} \
+        S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} \
         ./scripts/save-outputs.sh ${STACK_NAME}
 
     - name: Upload outputs.txt artifact
