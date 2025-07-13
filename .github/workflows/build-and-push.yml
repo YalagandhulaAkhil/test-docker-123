@@ -1,0 +1,71 @@
+name: Build & Push Docker Image to ECR
+
+on:
+  push:
+    branches: [ main ]             # adjust branch(es) as needed
+    paths:
+      - '**/*.py'                  # or your app source files
+      - 'Dockerfile'
+      - '.github/workflows/build-and-push.yml'
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # OIDC to assume role
+  contents: read
+
+env:
+  AWS_REGION:     ${{ secrets.AWS_REGION }}
+  ECR_STACK:      ecr-stack
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+
+    steps:
+    # ─────────────────────────────────────────
+    # 1. Checkout code
+    # ─────────────────────────────────────────
+    - uses: actions/checkout@v4
+
+    # ─────────────────────────────────────────
+    # 2. Configure AWS creds via OIDC
+    # ─────────────────────────────────────────
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
+
+    # ─────────────────────────────────────────
+    # 3. Fetch RepoUri from S3 outputs
+    # ─────────────────────────────────────────
+    - name: Get ECR repo URI
+      id: repo
+      run: |
+        aws s3 cp s3://${S3_BUCKET_NAME}/${ECR_STACK}/outputs.txt ecr.txt
+        REPO_URI=$(grep -E '^ *RepoUri *= *' ecr.txt | cut -d '=' -f2 | xargs)
+        echo "REPO_URI=${REPO_URI}" >> $GITHUB_ENV
+
+    # ─────────────────────────────────────────
+    # 4. Login to ECR
+    # ─────────────────────────────────────────
+    - name: Login to Amazon ECR
+      uses: aws-actions/amazon-ecr-login@v2
+
+    # ─────────────────────────────────────────
+    # 5. Build & push
+    # ─────────────────────────────────────────
+    - name: Build, tag, and push image
+      env:
+        REPO: ${{ env.REPO_URI }}
+      run: |
+        set -e
+        SHA=$(git rev-parse --short HEAD)
+        docker build -t $REPO:latest -t $REPO:$SHA .
+        docker push $REPO:latest
+        docker push $REPO:$SHA
+
+    # Optional – surface resulting image tag
+    - name: Output pushed image tag
+      run: echo "✅ Pushed $REPO_URI:latest and :$SHA"
