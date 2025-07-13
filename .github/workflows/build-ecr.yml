@@ -1,64 +1,51 @@
-name: Build & Push Docker image to ECR
+name: Deploy ECR Stack
 
 on:
   push:
-    branches: [main]
     paths:
-      - 'Dockerfile'
-      - '.github/workflows/build-push-ecr.yml'
-      - '**/*.html'        # if your app source is HTML
-      - '**/*.js'
-      - '**/*.py'
-  workflow_dispatch:       # manual trigger
+      - "infra/ecr.yml"
+      - ".github/workflows/deploy-ecr.yml"
+      - "scripts/save-outputs.sh"
+  workflow_dispatch:
 
 permissions:
-  id-token: write          # needed for OIDC
+  id-token: write
   contents: read
 
 env:
-  AWS_REGION: us-east-1
-  ECR_REPO_NAME: test-docker-123
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  STACK_NAME:   ecr-stack               # change if you use a different name
 
 jobs:
-  build-and-push:
+  deploy-ecr:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-    # Authenticate to AWS via OIDC
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: arn:aws:iam::590183820639:role/GithubOidcDeployRole
-        aws-region: ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
 
-    # Deploy / update the ECR stack (idempotent)
-    - name: Deploy ECR CloudFormation stack
-      run: |
-        aws cloudformation deploy \
-          --stack-name ecr-stack \
-          --template-file infra/ecr.yml \
-          --no-fail-on-empty-changeset
+      - name: Deploy ECR CloudFormation stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${STACK_NAME} \
+            --template-file infra/ecr.yml \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
 
-    # Get the repo URI exported by the stack
-    - name: Fetch ECR repository URI
-      id: get-uri
-      run: |
-        URI=$(aws cloudformation list-exports --query "Exports[?Name=='ecr-stack-RepoUri'].Value" --output text)
-        echo "repo_uri=$URI" >> $GITHUB_OUTPUT
+      - name: Save outputs and push to S3
+        run: |
+          chmod +x scripts/save-outputs.sh
+          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
+          ./scripts/save-outputs.sh ${STACK_NAME}
 
-    # Log in to ECR
-    - name: Login to Amazon ECR
-      uses: aws-actions/amazon-ecr-login@v2
-
-    # Build, tag, and push
-    - name: Build & push Docker image
-      env:
-        REPO_URI: ${{ steps.get-uri.outputs.repo_uri }}
-        IMAGE_TAG: ${{ github.sha }}
-      run: |
-        docker build -t $REPO_URI:latest -t $REPO_URI:$IMAGE_TAG .
-        docker push $REPO_URI:latest
-        docker push $REPO_URI:$IMAGE_TAG
+      - name: Upload outputs.txt as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecr-outputs
+          path: infra/outputs.txt

@@ -1,31 +1,29 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECR repository for TEST-DOCKER-123
+Description: Create an ECR repository for the project
 
 Parameters:
-  RepoName:
+  RepositoryName:
     Type: String
     Default: test-docker-123
 
 Resources:
-  EcrRepo:
+  EcrRepository:
     Type: AWS::ECR::Repository
     Properties:
-      RepositoryName: !Ref RepoName
+      RepositoryName: !Ref RepositoryName
       ImageScanningConfiguration:
         ScanOnPush: true
-      EncryptionConfiguration:
-        EncryptionType: AES256
       LifecyclePolicy:
         LifecyclePolicyText: |
           {
             "rules": [
               {
                 "rulePriority": 1,
-                "description": "Keep last 50 images",
+                "description": "Keep last 20 images",
                 "selection": {
                   "tagStatus": "any",
                   "countType": "imageCountMoreThan",
-                  "countNumber": 50
+                  "countNumber": 20
                 },
                 "action": { "type": "expire" }
               }
@@ -33,12 +31,8 @@ Resources:
           }
 
 Outputs:
-  RepositoryName:
-    Value: !Ref EcrRepo
-    Export:
-      Name: !Sub "${AWS::StackName}-RepoName"
-
-  RepositoryUri:
-    Value: !GetAtt EcrRepo.RepositoryUri
+  RepoUri:
+    Description: Full URI of the ECR repository
+    Value: !GetAtt EcrRepository.RepositoryUri
     Export:
       Name: !Sub "${AWS::StackName}-RepoUri"
