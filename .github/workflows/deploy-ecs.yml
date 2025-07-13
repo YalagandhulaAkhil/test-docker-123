@@ -32,8 +32,8 @@ jobs:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region:     ${{ env.AWS_REGION }}
 
-    # ── Extract outputs (robust to spaces) ──
-    - name: Read outputs from previous stacks
+    # ── Read upstream outputs ──
+    - name: Pull VPC & IAM outputs
       run: |
         set -euo pipefail
         aws s3 cp s3://${S3_BUCKET_NAME}/${VPC_STACK}/outputs.txt vpc.txt
@@ -42,21 +42,21 @@ jobs:
         extract() { grep -E "^ *$1 *=" "$2" | cut -d '=' -f2 | xargs; }
 
         VPC_ID=$(extract VpcId vpc.txt)
-        SUBNET1=$(extract PublicSubnet1Id vpc.txt)
-        SUBNET2=$(extract PublicSubnet2Id vpc.txt)
+        SUB1=$(extract PublicSubnet1Id vpc.txt)
+        SUB2=$(extract PublicSubnet2Id vpc.txt)
         PROFILE_ARN=$(extract ECSInstanceProfileArn iam.txt)
 
-        for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
+        for var in VPC_ID SUB1 SUB2 PROFILE_ARN; do
           [[ -z "${!var}" ]] && { echo "❌ $var missing"; exit 1; }
         done
 
         echo "VPC_ID=$VPC_ID"           >> $GITHUB_ENV
-        echo "SUBNET1=$SUBNET1"         >> $GITHUB_ENV
-        echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
+        echo "SUB1=$SUB1"               >> $GITHUB_ENV
+        echo "SUB2=$SUB2"               >> $GITHUB_ENV
         echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
-    # ── Deploy ECS cluster (no KeyName) ──
-    - name: Deploy ECS CloudFormation stack
+    # ── Deploy cluster ──
+    - name: Deploy ECS stack
       id: deploy
       run: |
         set -e
@@ -66,7 +66,7 @@ jobs:
           --parameter-overrides \
               ECSClusterName=html-ecs \
               VpcId=${VPC_ID} \
-              SubnetIds="${SUBNET1},${SUBNET2}" \
+              SubnetIds="${SUB1},${SUB2}" \
               Ec2InstanceProfileArn=${PROFILE_ARN} \
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
@@ -75,13 +75,14 @@ jobs:
       if: failure() && steps.deploy.outcome == 'failure'
       run: aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --max-items 30 --output table
 
-    - name: Save ECS outputs to S3
+    # ── Save outputs (now includes EC2SecurityGroupId) ──
+    - name: Save outputs & push to S3
       if: success()
       run: |
         chmod +x scripts/save-outputs.sh
         S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} ./scripts/save-outputs.sh ${STACK_NAME}
 
-    - name: Upload outputs.txt artifact
+    - name: Upload outputs artifact
       if: success()
       uses: actions/upload-artifact@v4
       with:

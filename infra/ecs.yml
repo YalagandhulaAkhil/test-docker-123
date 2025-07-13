@@ -9,29 +9,20 @@ Parameters:
     Type: String
     Default: html-ecs
     Description: Cluster name
-
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: Target VPC
-
   SubnetIds:
     Type: List<AWS::EC2::Subnet::Id>
-    Description: Two public subnets for the Auto Scaling Group
-
   Ec2InstanceProfileArn:
     Type: String
-    Description: ARN of the instance-profile for ECS EC2 hosts
-
   LatestECSAMI:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
-    Description: Latest Amazon Linux 2023 ECS-optimised AMI
 
 ########################################
 # RESOURCES
 ########################################
 Resources:
-  ## Security group for EC2 hosts
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -47,7 +38,6 @@ Resources:
           ToPort: 8080
           CidrIpv6: "::/0"
 
-  ## ECS cluster
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -56,14 +46,13 @@ Resources:
         - Name: containerInsights
           Value: disabled
 
-  ## Launch template (no KeyName)
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
     DependsOn: ECSCluster
     Properties:
       LaunchTemplateData:
         ImageId: !Ref LatestECSAMI
-        InstanceType: t3.micro           # adjust as needed
+        InstanceType: t3.micro
         IamInstanceProfile: { Arn: !Ref Ec2InstanceProfileArn }
         BlockDeviceMappings:
           - DeviceName: /dev/xvda
@@ -78,7 +67,6 @@ Resources:
             #!/bin/bash
             echo ECS_CLUSTER=${ECSClusterName} >> /etc/ecs/ecs.config
 
-  ## Auto Scaling group
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: ECSCluster
@@ -95,19 +83,15 @@ Resources:
           Value: !Sub "ECS Instance - ${ECSClusterName}"
           PropagateAtLaunch: true
 
-  ## Capacity provider (custom name; must not start with aws/ecs/fargate)
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
-      Name: !Sub "${ECSClusterName}-cp"        # <-- VALID NAME
+      Name: !Sub "${ECSClusterName}-cp"
       AutoScalingGroupProvider:
         AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-        ManagedScaling:
-          Status: ENABLED
-          TargetCapacity: 100
+        ManagedScaling: { Status: ENABLED, TargetCapacity: 100 }
         ManagedTerminationProtection: DISABLED
 
-  ## Associate capacity provider with cluster
   ClusterCPAssociation:
     Type: AWS::ECS::ClusterCapacityProviderAssociations
     DependsOn: ECSCluster
@@ -137,3 +121,8 @@ Outputs:
     Description: ASG capacity provider name
     Value: !Ref AsgCapacityProvider
     Export: { Name: !Sub "${AWS::StackName}-CapacityProvider" }
+
+  EC2SecurityGroupId:                      # 🆕
+    Description: SG ID for cluster hosts
+    Value: !Ref EC2SecurityGroup
+    Export: { Name: !Sub "${AWS::StackName}-EC2SecurityGroupId" }
