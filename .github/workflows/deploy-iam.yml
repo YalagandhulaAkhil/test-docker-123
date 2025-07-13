@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:     ${{ secrets.AWS_REGION }}
-  STACK_NAME:     ${{ secrets.STACK_NAME }}       # e.g. my-iam-stack
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  STACK_NAME:   my-iam-stack
 
 jobs:
   deploy-iam:
@@ -40,6 +40,7 @@ jobs:
 
       - name: Save outputs and push to S3
         run: |
+          chmod +x scripts/save-outputs.sh
           S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
           ./scripts/save-outputs.sh ${STACK_NAME}
 

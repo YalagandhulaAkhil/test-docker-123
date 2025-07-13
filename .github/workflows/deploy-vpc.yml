@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION: ${{ secrets.AWS_REGION }}
-  STACK_NAME: ${{ secrets.STACK_NAME }}      # e.g. my-vpc-stack
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  STACK_NAME:   ${{ secrets.STACK_NAME }}      # e.g. my-vpc-stack
 
 jobs:
   deploy-vpc:
@@ -24,7 +24,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
@@ -38,7 +38,8 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      - name: Save outputs + upload to S3
+      # ─── Ensure script is executable, then run it ───
+      - name: Save outputs and push to S3
         run: |
           chmod +x scripts/save-outputs.sh
           S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
