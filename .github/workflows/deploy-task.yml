@@ -1,0 +1,99 @@
+name: Deploy ECS Task / Service
+
+on:
+  push:
+    paths:
+      - "infra/task.yml"
+      - ".github/workflows/deploy-task.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:   ${{ secrets.AWS_REGION }}
+  STACK_NAME:   ecs-task-stack
+  VPC_STACK:    my-vpc-stack
+  IAM_STACK:    my-iam-stack
+  ECR_STACK:    ecr-stack
+  ECS_CLUSTER_STACK: ecs-cluster-stack
+  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  deploy-task:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
+
+    # ── Pull all outputs we need ──
+    - name: Fetch outputs from S3
+      run: |
+        set -euo pipefail
+        for s in ${IAM_STACK} ${ECR_STACK} ${ECS_CLUSTER_STACK}; do
+          aws s3 cp s3://${S3_BUCKET_NAME}/${s}/outputs.txt ${s}.txt
+          cat ${s}.txt
+        done
+
+        extract() { grep -E "^ *$1 *=" "$2" | cut -d '=' -f2 | xargs; }
+
+        # from IAM
+        EXEC_ROLE=$(extract ECSExecutionRoleArn ${IAM_STACK}.txt)
+        TASK_ROLE=$(extract ECSTaskRoleArn     ${IAM_STACK}.txt)
+
+        # from ECR
+        IMAGE_URI=$(extract RepoUri ${ECR_STACK}.txt):latest
+
+        # from ECS cluster stack
+        CLUSTER_NAME=$(extract ClusterName           ${ECS_CLUSTER_STACK}.txt)
+        CAP_PROVIDER=$(extract CapacityProviderName  ${ECS_CLUSTER_STACK}.txt)
+
+        for var in EXEC_ROLE TASK_ROLE IMAGE_URI CLUSTER_NAME CAP_PROVIDER; do
+          [[ -z "${!var}" ]] && { echo "❌ $var missing"; exit 1; }
+        done
+
+        echo "EXEC_ROLE=$EXEC_ROLE"           >> $GITHUB_ENV
+        echo "TASK_ROLE=$TASK_ROLE"           >> $GITHUB_ENV
+        echo "IMAGE_URI=$IMAGE_URI"           >> $GITHUB_ENV
+        echo "CLUSTER_NAME=$CLUSTER_NAME"     >> $GITHUB_ENV
+        echo "CAP_PROVIDER=$CAP_PROVIDER"     >> $GITHUB_ENV
+
+    - name: Deploy task/service stack
+      id: deploy
+      run: |
+        set -e
+        aws cloudformation deploy \
+          --stack-name ${STACK_NAME} \
+          --template-file infra/task.yml \
+          --parameter-overrides \
+              ClusterName=${CLUSTER_NAME} \
+              CapacityProviderName=${CAP_PROVIDER} \
+              ImageUri=${IMAGE_URI} \
+              ECSExecutionRoleArn=${EXEC_ROLE} \
+              ECSTaskRoleArn=${TASK_ROLE} \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --no-fail-on-empty-changeset
+
+    - name: Dump CFN events on failure
+      if: failure() && steps.deploy.outcome == 'failure'
+      run: aws cloudformation describe-stack-events --stack-name ${STACK_NAME} --max-items 40 --output table
+
+    - name: Save task/service outputs
+      if: success()
+      run: |
+        chmod +x scripts/save-outputs.sh
+        S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} ./scripts/save-outputs.sh ${STACK_NAME}
+
+    - name: Upload task outputs
+      if: success()
+      uses: actions/upload-artifact@v4
+      with:
+        name: task-outputs
+        path: infra/outputs.txt
