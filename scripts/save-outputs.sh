@@ -4,8 +4,8 @@
 
 set -euo pipefail
 
-OUTFILE="infra/outputs.txt"
-mkdir -p infra
+OUTFILE="scripts/outputs.txt"
+mkdir -p scripts
 : > "$OUTFILE"
 
 for STACK in "$@"; do

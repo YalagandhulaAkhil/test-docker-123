@@ -50,12 +50,12 @@ jobs:
       # ───────────────────────────────────────────────
       # 4. Save outputs into infra/outputs.txt
       # ───────────────────────────────────────────────
-      - name: Save VPC outputs to infra/outputs.txt
+      - name: Save VPC outputs to scripts/outputs.txt
         run: |
           chmod +x scripts/save-outputs.sh         # ensure script is executable
           mkdir -p infra                           # make sure folder exists
-          scripts/save-outputs.sh ${VPC_STACK} > infra/outputs.txt
-          echo "Wrote stack outputs to infra/outputs.txt"
+          scripts/save-outputs.sh ${VPC_STACK} > scripts/outputs.txt
+          echo "Wrote stack outputs to scripts/outputs.txt"
 
       # ───────────────────────────────────────────────
       # 5. Upload outputs.txt as artifact (optional)
@@ -64,4 +64,4 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: vpc-outputs
-          path: infra/outputs.txt
+          path: scripts/outputs.txt
