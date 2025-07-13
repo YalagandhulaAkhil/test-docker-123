@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Register task definition and create ECS service via ASG capacity-provider"
+Description: "Register ECS task definition only (no service created)"
 
 ########################################
 # PARAMETERS (supplied by deploy-task.yml)
@@ -7,18 +7,12 @@ Description: "Register task definition and create ECS service via ASG capacity-p
 Parameters:
   ClusterName:
     Type: String
-  CapacityProviderName:
-    Type: String
   ImageUri:
     Type: String
   ECSExecutionRoleArn:
     Type: String
   ECSTaskRoleArn:
     Type: String
-  SubnetIds:                 # Comma-separated list
-    Type: CommaDelimitedList
-  EC2SecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
 
 ########################################
 # RESOURCES
@@ -30,9 +24,9 @@ Resources:
     Properties:
       Family: !Sub "${ClusterName}-task"
       RequiresCompatibilities: [EC2]
-      NetworkMode: awsvpc          # ← fixed
-      Cpu:    "1024"               # 1 vCPU
-      Memory: "1024"               # 1 GiB
+      NetworkMode: awsvpc
+      Cpu:    "1024"     # 1 vCPU
+      Memory: "1024"     # 1 GiB
       ExecutionRoleArn: !Ref ECSExecutionRoleArn
       TaskRoleArn:      !Ref ECSTaskRoleArn
       ContainerDefinitions:
@@ -42,7 +36,7 @@ Resources:
           Cpu: 1024
           Memory: 1024
           PortMappings:
-            - ContainerPort: 8080  # HostPort auto-mapped in awsvpc
+            - ContainerPort: 8080
               Protocol: tcp
           LogConfiguration:
             LogDriver: awslogs
@@ -51,36 +45,12 @@ Resources:
               awslogs-region: !Ref "AWS::Region"
               awslogs-stream-prefix: site
 
-  Service:
-    Type: AWS::ECS::Service
-    DependsOn: TaskDef
-    Properties:
-      ServiceName: !Sub "${ClusterName}-svc"
-      Cluster:      !Ref ClusterName
-      DesiredCount: 1
-      CapacityProviderStrategy:
-        - CapacityProvider: !Ref CapacityProviderName
-          Weight: 1
-      TaskDefinition: !Ref TaskDef
-      NetworkConfiguration:
-        AwsvpcConfiguration:
-          Subnets:        !Ref SubnetIds
-          SecurityGroups: [ !Ref EC2SecurityGroupId ]
-          AssignPublicIp: ENABLED
-      DeploymentConfiguration:
-        MaximumPercent:        200
-        MinimumHealthyPercent: 50
-
 ########################################
 # OUTPUTS
 ########################################
 Outputs:
-  ServiceName:
-    Description: Name of ECS service
-    Value: !GetAtt Service.Name
-    Export:
-      Name: !Sub "${AWS::StackName}-ServiceName"
-
   TaskDefArn:
-    Description: ARN of the task definition
+    Description: ARN of the registered task definition
     Value: !Ref TaskDef
+    Export:
+      Name: !Sub "${AWS::StackName}-TaskDefArn"
