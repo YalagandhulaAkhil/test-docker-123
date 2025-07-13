@@ -3,15 +3,13 @@ Description: Minimal VPC with two public subnets (free-tier friendly)
 
 Resources:
 
-  MyVpc:
+  VPC:
     Type: AWS::EC2::VPC
     Properties:
       CidrBlock: 10.0.0.0/16
       EnableDnsSupport: true
       EnableDnsHostnames: true
-      Tags:
-        - Key: Name
-          Value: FreeTierVPC
+      Tags: [{ Key: Name, Value: FreeTierVPC }]
 
   InternetGateway:
     Type: AWS::EC2::InternetGateway
@@ -19,59 +17,55 @@ Resources:
   AttachGateway:
     Type: AWS::EC2::VPCGatewayAttachment
     Properties:
-      VpcId: !Ref MyVpc
+      VpcId: !Ref VPC
       InternetGatewayId: !Ref InternetGateway
 
   PublicSubnet1:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref MyVpc
-      CidrBlock: 10.0.1.0/24
+      VpcId:        !Ref VPC
+      CidrBlock:    10.0.1.0/24
       AvailabilityZone: !Select [0, !GetAZs ""]
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: FreeTier-PublicSubnet1
+      Tags: [{ Key: Name, Value: PublicSubnet1 }]
 
   PublicSubnet2:
     Type: AWS::EC2::Subnet
     Properties:
-      VpcId: !Ref MyVpc
-      CidrBlock: 10.0.2.0/24
+      VpcId:        !Ref VPC
+      CidrBlock:    10.0.2.0/24
       AvailabilityZone: !Select [1, !GetAZs ""]
       MapPublicIpOnLaunch: true
-      Tags:
-        - Key: Name
-          Value: FreeTier-PublicSubnet2
+      Tags: [{ Key: Name, Value: PublicSubnet2 }]
 
-  PublicRouteTable:
+  RouteTable:
     Type: AWS::EC2::RouteTable
     Properties:
-      VpcId: !Ref MyVpc
+      VpcId: !Ref VPC
 
-  PublicRoute:
+  DefaultRoute:
     Type: AWS::EC2::Route
     Properties:
-      RouteTableId: !Ref PublicRouteTable
+      RouteTableId:         !Ref RouteTable
       DestinationCidrBlock: 0.0.0.0/0
-      GatewayId: !Ref InternetGateway
+      GatewayId:            !Ref InternetGateway
 
-  Subnet1RouteAssoc:
+  Subnet1Association:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet1
-      RouteTableId: !Ref PublicRouteTable
+      SubnetId:     !Ref PublicSubnet1
+      RouteTableId: !Ref RouteTable
 
-  Subnet2RouteAssoc:
+  Subnet2Association:
     Type: AWS::EC2::SubnetRouteTableAssociation
     Properties:
-      SubnetId: !Ref PublicSubnet2
-      RouteTableId: !Ref PublicRouteTable
+      SubnetId:     !Ref PublicSubnet2
+      RouteTableId: !Ref RouteTable
 
 Outputs:
   VpcId:
     Description: VPC ID
-    Value: !Ref MyVpc
+    Value: !Ref VPC
     Export:
       Name: !Sub "${AWS::StackName}-VpcId"
 

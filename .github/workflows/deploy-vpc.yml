@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:  us-east-1
-  VPC_STACK:   my-vpc-stack          # change if you use a different stack name
+  AWS_REGION: ${{ secrets.AWS_REGION }}
+  STACK_NAME: ${{ secrets.STACK_NAME }}      # e.g. my-vpc-stack
 
 jobs:
   deploy-vpc:
@@ -30,34 +30,20 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region:     ${{ env.AWS_REGION }}
 
-      # ──────────────────────────────────────────────
-      # Deploy / update VPC stack
-      # ──────────────────────────────────────────────
       - name: Deploy VPC CloudFormation stack
         run: |
           aws cloudformation deploy \
-            --stack-name ${VPC_STACK} \
+            --stack-name ${STACK_NAME} \
             --template-file infra/vpc.yml \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      # ──────────────────────────────────────────────
-      # Save outputs -> infra/outputs.txt
-      # ──────────────────────────────────────────────
-      - name: Save VPC outputs to infra/outputs.txt
+      - name: Save outputs + upload to S3
         run: |
-          scripts/save-outputs.sh ${VPC_STACK}
+          chmod +x scripts/save-outputs.sh
+          S3_BUCKET_NAME=${{ secrets.S3_BUCKET_NAME }} \
+          ./scripts/save-outputs.sh ${STACK_NAME}
 
-      # ──────────────────────────────────────────────
-      # Upload outputs.txt to S3
-      # (bucket name stored in secret S3_BUCKET)
-      # ──────────────────────────────────────────────
-      - name: Upload outputs.txt to S3
-        run: |
-          aws s3 cp infra/outputs.txt s3://${{ secrets.S3_BUCKET }}/vpc/outputs.txt
-          echo "Uploaded to https://${{ secrets.S3_BUCKET }}.s3.amazonaws.com/vpc/outputs.txt"
-
-      # Optional GitHub artifact
       - name: Upload outputs.txt as artifact
         uses: actions/upload-artifact@v4
         with:
