@@ -9,27 +9,36 @@ on:
   workflow_dispatch:
 
 permissions:
-  id-token: write
+  id-token: write          # OIDC to AWS
   contents: read
 
 env:
-  AWS_REGION: us-east-1
-  VPC_STACK: my-vpc-stack
+  AWS_REGION:   us-east-1
+  VPC_STACK:    my-vpc-stack     # change if you use a different stack name
 
 jobs:
   deploy-vpc:
     runs-on: ubuntu-latest
 
     steps:
+      # ───────────────────────────────────────────────
+      # 1. Checkout repo
+      # ───────────────────────────────────────────────
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Configure AWS credentials (OIDC)
+      # ───────────────────────────────────────────────
+      # 2. Assume AWS role via OIDC
+      # ───────────────────────────────────────────────
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
+          aws-region:     ${{ env.AWS_REGION }}
 
+      # ───────────────────────────────────────────────
+      # 3. Deploy (or update) the VPC stack
+      # ───────────────────────────────────────────────
       - name: Deploy VPC CloudFormation stack
         run: |
           aws cloudformation deploy \
@@ -38,13 +47,21 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset
 
-      - name: Save VPC outputs to outputs.txt
+      # ───────────────────────────────────────────────
+      # 4. Save outputs into infra/outputs.txt
+      # ───────────────────────────────────────────────
+      - name: Save VPC outputs to infra/outputs.txt
         run: |
-          chmod +x scripts/save-outputs.sh
-          scripts/save-outputs.sh ${VPC_STACK}
+          chmod +x scripts/save-outputs.sh         # ensure script is executable
+          mkdir -p infra                           # make sure folder exists
+          scripts/save-outputs.sh ${VPC_STACK} > infra/outputs.txt
+          echo "Wrote stack outputs to infra/outputs.txt"
 
+      # ───────────────────────────────────────────────
+      # 5. Upload outputs.txt as artifact (optional)
+      # ───────────────────────────────────────────────
       - name: Upload outputs.txt
         uses: actions/upload-artifact@v4
         with:
           name: vpc-outputs
-          path: outputs.txt
+          path: infra/outputs.txt
