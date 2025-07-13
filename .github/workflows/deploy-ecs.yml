@@ -26,23 +26,14 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # ─────────────────────────────────────────────
-    # 1. Checkout code
-    # ─────────────────────────────────────────────
     - uses: actions/checkout@v4
 
-    # ─────────────────────────────────────────────
-    # 2. AWS credentials via OIDC
-    # ─────────────────────────────────────────────
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region:     ${{ env.AWS_REGION }}
 
-    # ─────────────────────────────────────────────
-    # 3. Fetch outputs from S3 & parse variables
-    # ─────────────────────────────────────────────
     - name: Fetch stack outputs and export variables
       run: |
         set -euo pipefail
@@ -65,7 +56,6 @@ jobs:
         echo "  SUBNET2=$SUBNET2"
         echo "  PROFILE_ARN=$PROFILE_ARN"
 
-        # Fail if mandatory vars missing
         for var in VPC_ID SUBNET1 SUBNET2 PROFILE_ARN; do
           [[ -z "${!var}" ]] && { echo "❌ Missing $var"; exit 1; }
         done
@@ -75,9 +65,6 @@ jobs:
         echo "SUBNET2=$SUBNET2"         >> $GITHUB_ENV
         echo "PROFILE_ARN=$PROFILE_ARN" >> $GITHUB_ENV
 
-    # ─────────────────────────────────────────────
-    # 4. Deploy / update ECS Cluster stack
-    # ─────────────────────────────────────────────
     - name: Deploy ECS CloudFormation stack
       id: deploy
       run: |
@@ -93,18 +80,12 @@ jobs:
           --capabilities CAPABILITY_NAMED_IAM \
           --no-fail-on-empty-changeset
 
-    # ─────────────────────────────────────────────
-    # 5. On failure, dump recent CFN events
-    # ─────────────────────────────────────────────
     - name: Dump CFN events on failure
       if: failure() && steps.deploy.outcome == 'failure'
       run: |
         aws cloudformation describe-stack-events \
           --stack-name ${STACK_NAME} --max-items 30 --output table
 
-    # ─────────────────────────────────────────────
-    # 6. Save ECS outputs & upload to S3 (optional)
-    # ─────────────────────────────────────────────
     - name: Save ECS outputs and push to S3
       if: success()
       run: |
@@ -112,9 +93,6 @@ jobs:
         S3_BUCKET_NAME=${S3_BUCKET_NAME} \
         ./scripts/save-outputs.sh ${STACK_NAME}
 
-    # ─────────────────────────────────────────────
-    # 7. Attach ECS outputs.txt as artifact
-    # ─────────────────────────────────────────────
     - name: Upload outputs.txt artifact
       if: success()
       uses: actions/upload-artifact@v4

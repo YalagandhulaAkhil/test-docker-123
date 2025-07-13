@@ -1,6 +1,5 @@
----
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS cluster (EC2 launch type) with ASG capacity provider
+Description: ECS cluster (EC2 launch type) with ASG capacity provider – no ECS service
 
 Parameters:
   ECSClusterName:
@@ -51,14 +50,23 @@ Resources:
 
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    DependsOn: ECSCluster
     Properties:
       LaunchTemplateData:
         InstanceType: t3.micro
         ImageId: !Ref LatestECSOptimizedAMI
         IamInstanceProfile:
           Arn: !Ref PInstanceProfileArn
-        SecurityGroupIds:
-          - !Ref EcsHostSecurityGroup
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: true
+            DeviceIndex: 0
+            DeleteOnTermination: true
+            Groups:
+              - !Ref EcsHostSecurityGroup
+        BlockDeviceMappings:
+          - DeviceName: "/dev/xvda"
+            Ebs:
+              VolumeSize: 30
         UserData:
           Fn::Base64:
             Fn::Sub:
@@ -69,13 +77,14 @@ Resources:
 
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
+    DependsOn: ECSCluster
     Properties:
       VPCZoneIdentifier:
         - !Ref PSubnet1
         - !Ref PSubnet2
       MinSize: 0
       MaxSize: 2
-      DesiredCapacity: 1
+      DesiredCapacity: 0
       MixedInstancesPolicy:
         LaunchTemplate:
           LaunchTemplateSpecification:
@@ -89,7 +98,7 @@ Resources:
           SpotAllocationStrategy: lowest-price
       Tags:
         - Key: Name
-          Value: !Sub "ECS Host – ${ECSClusterName}"
+          Value: !Sub "ECS Instance - ${ECSClusterName}"
           PropagateAtLaunch: true
 
   AsgCapacityProvider:
@@ -104,12 +113,13 @@ Resources:
 
   ClusterCPAssociation:
     Type: AWS::ECS::ClusterCapacityProviderAssociations
+    DependsOn: ECSCluster
     Properties:
       Cluster: !Ref ECSCluster
       CapacityProviders:
-        - !Ref AsgCapacityProvider
         - FARGATE
         - FARGATE_SPOT
+        - !Ref AsgCapacityProvider
       DefaultCapacityProviderStrategy:
         - Base: 0
           Weight: 1
