@@ -1,0 +1,68 @@
+# ------------------------------------------------------------
+# infra/service.yml
+# ------------------------------------------------------------
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "Create an ECS Service (EC2 launch type – capacity-provider strategy)"
+
+###############################################################
+# Parameters – all are passed in by the GitHub workflow
+###############################################################
+Parameters:
+  ClusterName:
+    Type: String
+  CapacityProviderName:
+    Type: String
+  TaskDefinitionArn:
+    Type: String
+  SubnetIds:              # comma-delimited list (awsvpc)
+    Type: CommaDelimitedList
+  EC2SecurityGroupId:
+    Type: AWS::EC2::SecurityGroup::Id
+  DesiredCount:
+    Type: Number
+    Default: 1
+
+###############################################################
+# Resources
+###############################################################
+Resources:
+
+  ECSService:
+    Type: AWS::ECS::Service
+    Properties:
+      ServiceName: !Sub "${ClusterName}-svc"
+      Cluster:      !Ref ClusterName
+      DesiredCount: !Ref DesiredCount
+
+      CapacityProviderStrategy:        # ← uses your CP rather than LaunchType
+        - CapacityProvider: !Ref CapacityProviderName
+          Weight: 1
+          Base: 0
+
+      TaskDefinition: !Ref TaskDefinitionArn
+
+      NetworkConfiguration:            # awsvpc networking
+        AwsvpcConfiguration:
+          Subnets:        !Ref SubnetIds
+          SecurityGroups: [ !Ref EC2SecurityGroupId ]
+          AssignPublicIp: ENABLED       # public IP in public subnets
+
+      DeploymentConfiguration:
+        MaximumPercent:        200
+        MinimumHealthyPercent: 50
+      EnableECSManagedTags: true
+      PropagateTags: SERVICE
+
+###############################################################
+# Outputs
+###############################################################
+Outputs:
+  ServiceName:
+    Description: Name of the ECS Service
+    Value: !GetAtt ECSService.Name
+    Export: { Name: !Sub "${AWS::StackName}-ServiceName" }
+
+  ServiceArn:
+    Description: ARN of the ECS Service
+    Value: !Ref ECSService
+    Export: { Name: !Sub "${AWS::StackName}-ServiceArn" }

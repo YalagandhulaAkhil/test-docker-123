@@ -1,0 +1,84 @@
+name: Deploy ECS Service
+
+on:
+  push:
+    paths:
+      - infra/service.yml
+      - .github/workflows/deploy-service.yml
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:          ${{ secrets.AWS_REGION }}
+  STACK_NAME:          ecs-service-stack
+  # existing stacks holding exported outputs
+  IAM_STACK:           my-iam-stack
+  ECR_STACK:           ecr-stack
+  CLUSTER_STACK:       ecs-cluster-stack
+  S3_BUCKET_NAME:      ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  deploy-service:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+        aws-region:     ${{ env.AWS_REGION }}
+
+    # ----------------------------------------------------------
+    # 1. Pull all the outputs we need from S3
+    # ----------------------------------------------------------
+    - name: Fetch stack outputs
+      run: |
+        set -euo pipefail
+        for s in $CLUSTER_STACK $IAM_STACK $ECR_STACK; do
+          aws s3 cp s3://$S3_BUCKET_NAME/$s/outputs.txt $s.txt
+        done
+
+        grab () { grep -E "^ *$1 *=" "$2" | cut -d '=' -f2 | xargs; }
+
+        CLUSTER_NAME=$(grab ClusterName          ${CLUSTER_STACK}.txt)
+        CAP_PROVIDER=$(grab CapacityProviderName ${CLUSTER_STACK}.txt)
+        SG_ID=$(grab EC2SecurityGroupId          ${CLUSTER_STACK}.txt)
+        SUB1=$(grab PublicSubnet1Id              my-vpc-stack.txt)
+        SUB2=$(grab PublicSubnet2Id              my-vpc-stack.txt)
+        TASK_DEF=$(aws ecs list-task-definitions --family-prefix "$CLUSTER_NAME-task" --status ACTIVE --sort DESC --max-items 1 --query 'taskDefinitionArns[0]' --output text)
+
+        echo "CLUSTER_NAME=$CLUSTER_NAME"          >> $GITHUB_ENV
+        echo "CAP_PROVIDER=$CAP_PROVIDER"          >> $GITHUB_ENV
+        echo "SG_ID=$SG_ID"                        >> $GITHUB_ENV
+        echo "SUBNETS=$SUB1,$SUB2"                 >> $GITHUB_ENV
+        echo "TASK_DEF=$TASK_DEF"                  >> $GITHUB_ENV
+
+    # ----------------------------------------------------------
+    # 2. Deploy / update the ECS Service
+    # ----------------------------------------------------------
+    - name: Deploy ECS Service stack
+      id: deploy
+      run: |
+        set -e
+        aws cloudformation deploy \
+          --stack-name $STACK_NAME \
+          --template-file infra/service.yml \
+          --parameter-overrides \
+              ClusterName=$CLUSTER_NAME \
+              CapacityProviderName=$CAP_PROVIDER \
+              TaskDefinitionArn=$TASK_DEF \
+              EC2SecurityGroupId=$SG_ID \
+              SubnetIds=$SUBNETS \
+              DesiredCount=1 \
+          --capabilities CAPABILITY_NAMED_IAM \
+          --no-fail-on-empty-changeset
+
+    - name: Dump CFN events on failure
+      if: failure() && steps.deploy.outcome == 'failure'
+      run: |
+        aws cloudformation describe-stack-events --stack-name $STACK_NAME --max-items 30 --output table
