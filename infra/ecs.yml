@@ -72,7 +72,7 @@ Resources:
     DependsOn: ECSCluster
     Properties:
       VPCZoneIdentifier: !Ref SubnetIds
-      MinSize: 2
+      MinSize: 1
       MaxSize: 2
       DesiredCapacity: 1
       LaunchTemplate:
