@@ -24,91 +24,54 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # ─────────────────────────────────────────
-    # 1. Checkout code
-    # ─────────────────────────────────────────
-    - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-    # ─────────────────────────────────────────
-    # 2. AWS credentials via OIDC
-    # ─────────────────────────────────────────
-    - name: Configure AWS credentials
-      uses: aws-actions/configure-aws-credentials@v4
-      with:
-        role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-        aws-region:     ${{ env.AWS_REGION }}
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
 
-    # ─────────────────────────────────────────
-    # 3. Pull required outputs from S3
-    # ─────────────────────────────────────────
-    - name: Fetch outputs
-      id: outputs
-      run: |
-        set -euo pipefail
+      - name: Read outputs from all stacks
+        run: |
+          set -euo pipefail
+          chmod +x scripts/read-s3-outputs.sh
 
-        for s in ${IAM_STACK} ${ECR_STACK} ${ECS_CLUSTER_STACK}; do
-          aws s3 cp s3://${S3_BUCKET_NAME}/${s}/outputs.txt ${s}.txt
-          cat ${s}.txt
-        done
+          echo "🔹 Reading IAM stack outputs..."
+          TASK_ROLE=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSTaskRoleArn)
+          EXEC_ROLE=$(scripts/read-s3-outputs.sh ${IAM_STACK} ECSExecutionRoleArn)
 
-        kv () { grep -E "^ *$1 *=" "$2" | cut -d '=' -f2 | xargs; }
+          echo "🔹 Reading ECR stack outputs..."
+          REPO_URI=$(scripts/read-s3-outputs.sh ${ECR_STACK} RepoUri)
 
-        EXEC_ROLE=$(kv ECSExecutionRoleArn ${IAM_STACK}.txt)
-        TASK_ROLE=$(kv ECSTaskRoleArn     ${IAM_STACK}.txt)
-        IMAGE_URI=$(kv RepoUri            ${ECR_STACK}.txt):latest
-        CLUSTER_NAME=$(kv ClusterName     ${ECS_CLUSTER_STACK}.txt)
+          echo "🔹 Reading ECS cluster outputs..."
+          CLUSTER_NAME=$(scripts/read-s3-outputs.sh ${ECS_CLUSTER_STACK} ECSClusterName)
 
-        for v in EXEC_ROLE TASK_ROLE IMAGE_URI CLUSTER_NAME; do
-          [[ -z "${!v}" ]] && { echo "❌ $v missing"; exit 1; }
-        done
+          if [[ -z "$TASK_ROLE" || -z "$EXEC_ROLE" || -z "$REPO_URI" || -z "$CLUSTER_NAME" ]]; then
+            echo "❌ One or more outputs are missing. Check previous stack deployments."
+            exit 1
+          fi
 
-        echo "EXEC_ROLE=$EXEC_ROLE"           >> $GITHUB_ENV
-        echo "TASK_ROLE=$TASK_ROLE"           >> $GITHUB_ENV
-        echo "IMAGE_URI=$IMAGE_URI"           >> $GITHUB_ENV
-        echo "CLUSTER_NAME=$CLUSTER_NAME"     >> $GITHUB_ENV
+          echo "✅ Outputs successfully retrieved."
+          echo "TASK_ROLE=$TASK_ROLE"       >> $GITHUB_ENV
+          echo "EXEC_ROLE=$EXEC_ROLE"       >> $GITHUB_ENV
+          echo "REPO_URI=$REPO_URI"         >> $GITHUB_ENV
+          echo "CLUSTER_NAME=$CLUSTER_NAME" >> $GITHUB_ENV
 
-    # ─────────────────────────────────────────
-    # 4. Register task definition (CFN stack)
-    # ─────────────────────────────────────────
-    - name: Deploy CloudFormation stack
-      id: deploy
-      run: |
-        set -e
-        aws cloudformation deploy \
-          --stack-name ${STACK_NAME} \
-          --template-file infra/task.yml \
-          --parameter-overrides \
-              ClusterName=${CLUSTER_NAME} \
-              ImageUri=${IMAGE_URI} \
-              ECSExecutionRoleArn=${EXEC_ROLE} \
-              ECSTaskRoleArn=${TASK_ROLE} \
-          --capabilities CAPABILITY_NAMED_IAM \
-          --no-fail-on-empty-changeset
+      - name: Register ECS Task Definition
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${STACK_NAME} \
+            --template-file infra/task.yml \
+            --parameter-overrides \
+              ContainerImage=${REPO_URI}:latest \
+              ExecutionRoleArn=${EXEC_ROLE} \
+              TaskRoleArn=${TASK_ROLE} \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
 
-    # ─────────────────────────────────────────
-    # 5. Dump events on failure
-    # ─────────────────────────────────────────
-    - name: Dump CFN events (on failure)
-      if: failure() && steps.deploy.outcome == 'failure'
-      run: |
-        aws cloudformation describe-stack-events \
-          --stack-name ${STACK_NAME} --max-items 40 --output table
-
-    # ─────────────────────────────────────────
-    # 6. Save outputs.txt to S3
-    # ─────────────────────────────────────────
-    - name: Save task-def outputs
-      if: success()
-      run: |
-        chmod +x scripts/save-outputs.sh
-        S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} ./scripts/save-outputs.sh ${STACK_NAME}
-
-    # ─────────────────────────────────────────
-    # 7. Upload outputs as artifact
-    # ─────────────────────────────────────────
-    - name: Upload outputs artifact
-      if: success()
-      uses: actions/upload-artifact@v4
-      with:
-        name: task-def-outputs
-        path: infra/outputs.txt
+      - name: Save task stack outputs
+        run: |
+          chmod +x scripts/save-outputs.sh
+          S3_BUCKET_NAME=${S3_BUCKET_NAME} \
+          ./scripts/save-outputs.sh ${STACK_NAME}
