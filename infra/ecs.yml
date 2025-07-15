@@ -1,55 +1,47 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
-  ECS Cluster (EC2 launch‑type) backed by an Auto Scaling Group.
-  Default host size is t2.micro, no SSH key, 8080 open.
+  Free‑tier ECS cluster (EC2 launch type) with 1× t2.micro host
+  and an Auto Scaling capacity provider – no SSH key.
 
-#################################################
+##############################################################################
 # PARAMETERS
-#################################################
+##############################################################################
 Parameters:
   ECSClusterName:
     Type: String
     Default: html-ecs
-    Description: Logical name for the cluster
+    Description: ECS cluster name
 
   VpcId:
     Type: AWS::EC2::VPC::Id
-    Description: VPC where hosts will run
+    Description: VPC where the host will run
 
   SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: Two public subnets for the ASG
+    Type: List<AWS::EC2::Subnet::Id
+    Description: **Public** subnets (needs Internet Gateway for ECS agent)
 
   Ec2InstanceProfileArn:
     Type: String
-    Description: ARN of instance‑profile with ecsInstanceRole + SSM
-
-  InstanceType:                        # ← updated default
-    Type: String
-    Default: t2.micro                  # 1 vCPU / 1 GiB host
-    AllowedPattern: ^[A-Za-z0-9.]*$
-    Description: EC2 host instance type
-
-  RootVolumeGiB:
-    Type: Number
-    Default: 30
-    MinValue: 8
-    MaxValue: 200
-    Description: Size of root EBS volume
+    Description: ARN of the instance profile for the EC2 host
 
   LatestECSAMI:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ecs/optimized-ami/amazon-linux-2023/recommended/image_id
-    Description: Latest AL2023 ECS‑optimised AMI
+    # If that SSM parameter ever disappears in your region, hard‑code a valid AMI ID
+    # Example:  ami-0bbbxxx123 (Amazon Linux 2023 ECS Optimised, us‑east‑1)
 
-#################################################
-# SECURITY GROUP
-#################################################
+##############################################################################
+# RESOURCES
+##############################################################################
 Resources:
+
+  # ──────────────────────────────────────────────────────────────
+  # Security group – allow inbound HTTP 8080 to containers
+  # ──────────────────────────────────────────────────────────────
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow inbound HTTP on 8080
+      GroupDescription: Allow inbound HTTP 8080 for container traffic
       VpcId: !Ref VpcId
       SecurityGroupIngress:
         - IpProtocol: tcp
@@ -59,11 +51,11 @@ Resources:
         - IpProtocol: tcp
           FromPort: 8080
           ToPort: 8080
-          CidrIpv6: '::/0'
+          CidrIpv6: "::/0"
 
-#################################################
-# ECS CLUSTER + HOSTS
-#################################################
+  # ──────────────────────────────────────────────────────────────
+  # ECS Cluster
+  # ──────────────────────────────────────────────────────────────
   ECSCluster:
     Type: AWS::ECS::Cluster
     Properties:
@@ -72,49 +64,62 @@ Resources:
         - Name: containerInsights
           Value: disabled
 
+  # ──────────────────────────────────────────────────────────────
+  # Launch template (t2.micro + no KeyName)
+  # ──────────────────────────────────────────────────────────────
   ECSLaunchTemplate:
     Type: AWS::EC2::LaunchTemplate
+    DependsOn: ECSCluster
     Properties:
       LaunchTemplateData:
-        ImageId:            !Ref LatestECSAMI
-        InstanceType:       !Ref InstanceType      # <- t2.micro default
-        IamInstanceProfile: { Arn: !Ref Ec2InstanceProfileArn }
+        ImageId:          !Ref LatestECSAMI
+        InstanceType:     t2.micro       # ← FREE‑TIER
+        IamInstanceProfile:
+          Arn: !Ref Ec2InstanceProfileArn
+        NetworkInterfaces:
+          - DeviceIndex:                0
+            AssociatePublicIpAddress:   true
+            DeleteOnTermination:        true
+            Groups: [ !GetAtt EC2SecurityGroup.GroupId ]
         BlockDeviceMappings:
           - DeviceName: /dev/xvda
-            Ebs: { VolumeSize: !Ref RootVolumeGiB, VolumeType: gp3 }
-        NetworkInterfaces:
-          - DeviceIndex: 0
-            AssociatePublicIpAddress: true
-            DeleteOnTermination: true
-            Groups: [ !Ref EC2SecurityGroup ]
+            Ebs: { VolumeSize: 30 }
         UserData:
           Fn::Base64: !Sub |
             #!/bin/bash
-            echo ECS_CLUSTER=${ECSClusterName} >> /etc/ecs/ecs.config
+            echo "ECS_CLUSTER=${ECSClusterName}" >> /etc/ecs/ecs.config
 
+  # ──────────────────────────────────────────────────────────────
+  # Auto Scaling Group (fixed at 1 × t2.micro)
+  # ──────────────────────────────────────────────────────────────
   ECSAutoScalingGroup:
     Type: AWS::AutoScaling::AutoScalingGroup
     DependsOn: ECSCluster
     Properties:
       VPCZoneIdentifier: !Ref SubnetIds
-      MinSize: 0
-      MaxSize: 2
-      DesiredCapacity: 1
+      MinSize:           1   # keep exactly ONE instance
+      DesiredCapacity:   1
+      MaxSize:           1
       LaunchTemplate:
         LaunchTemplateId: !Ref ECSLaunchTemplate
-        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+        Version:          !GetAtt ECSLaunchTemplate.LatestVersionNumber
       Tags:
-        - Key: Name
-          Value: !Sub "ECS Host – ${ECSClusterName}"
+        - Key:   Name
+          Value: !Sub "ECS Host – ${ECSClusterName}"
           PropagateAtLaunch: true
 
+  # ──────────────────────────────────────────────────────────────
+  # Capacity provider
+  # ──────────────────────────────────────────────────────────────
   AsgCapacityProvider:
     Type: AWS::ECS::CapacityProvider
     Properties:
       Name: !Sub "${ECSClusterName}-cp"
       AutoScalingGroupProvider:
-        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
-        ManagedScaling: { Status: ENABLED, TargetCapacity: 100 }
+        AutoScalingGroupArn:  !Ref ECSAutoScalingGroup
+        ManagedScaling:
+          Status:          ENABLED
+          TargetCapacity:  100
         ManagedTerminationProtection: DISABLED
 
   ClusterCPAssociation:
@@ -123,30 +128,30 @@ Resources:
       Cluster: !Ref ECSCluster
       CapacityProviders: [ !Ref AsgCapacityProvider ]
       DefaultCapacityProviderStrategy:
-        - CapacityProvider: !Ref AsgCapacityProvider
+        - Base:   0
           Weight: 1
-          Base: 0
+          CapacityProvider: !Ref AsgCapacityProvider
 
-#################################################
+##############################################################################
 # OUTPUTS
-#################################################
+##############################################################################
 Outputs:
   ClusterArn:
-    Description: ARN of the ECS cluster
+    Description: ECS cluster ARN
     Value: !Ref ECSCluster
     Export: { Name: !Sub "${AWS::StackName}-ClusterArn" }
 
   ClusterName:
-    Description: Name of the ECS cluster
+    Description: ECS cluster name
     Value: !Ref ECSClusterName
     Export: { Name: !Sub "${AWS::StackName}-ClusterName" }
 
   CapacityProviderName:
-    Description: Name of the ASG capacity provider
+    Description: ASG capacity provider name
     Value: !Ref AsgCapacityProvider
     Export: { Name: !Sub "${AWS::StackName}-CapacityProvider" }
 
   EC2SecurityGroupId:
-    Description: Security‑group ID for the ECS hosts
+    Description: Security‑group ID of the cluster hosts
     Value: !Ref EC2SecurityGroup
     Export: { Name: !Sub "${AWS::StackName}-EC2SecurityGroupId" }
