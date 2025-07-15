@@ -1,68 +1,68 @@
-# ------------------------------------------------------------
-# infra/service.yml
-# ------------------------------------------------------------
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Create an ECS Service (EC2 launch type – capacity-provider strategy)"
+Description: ECS Service with EC2 launch type and managed network configuration
 
-###############################################################
-# Parameters – all are passed in by the GitHub workflow
-###############################################################
 Parameters:
   ClusterName:
     Type: String
-  CapacityProviderName:
+    Description: Name of the ECS Cluster
+
+  ServiceName:
     Type: String
+    Default: html-ecs-service
+    Description: Name of the ECS Service
+
   TaskDefinitionArn:
     Type: String
-  SubnetIds:              # comma-delimited list (awsvpc)
-    Type: CommaDelimitedList
-  EC2SecurityGroupId:
+    Description: ARN of the ECS Task Definition
+
+  SubnetIds:
+    Type: List<AWS::EC2::Subnet::Id>
+    Description: List of subnet IDs for the ECS service
+
+  SecurityGroupId:
     Type: AWS::EC2::SecurityGroup::Id
-  DesiredCount:
-    Type: Number
-    Default: 1
+    Description: Security Group ID to associate with the ECS tasks
 
-###############################################################
-# Resources
-###############################################################
+  CapacityProviderName:
+    Type: String
+    Description: Name of the capacity provider associated with the ECS cluster
+
 Resources:
-
   ECSService:
     Type: AWS::ECS::Service
     Properties:
-      ServiceName: !Sub "${ClusterName}-svc"
-      Cluster:      !Ref ClusterName
-      DesiredCount: !Ref DesiredCount
-
-      CapacityProviderStrategy:        # ← uses your CP rather than LaunchType
+      Cluster: !Ref ClusterName
+      ServiceName: !Ref ServiceName
+      TaskDefinition: !Ref TaskDefinitionArn
+      DesiredCount: 1
+      LaunchType: EC2
+      NetworkConfiguration:
+        AwsvpcConfiguration:
+          AssignPublicIp: ENABLED
+          Subnets: !Ref SubnetIds
+          SecurityGroups:
+            - !Ref SecurityGroupId
+      CapacityProviderStrategy:
         - CapacityProvider: !Ref CapacityProviderName
           Weight: 1
-          Base: 0
-
-      TaskDefinition: !Ref TaskDefinitionArn
-
-      NetworkConfiguration:            # awsvpc networking
-        AwsvpcConfiguration:
-          Subnets:        !Ref SubnetIds
-          SecurityGroups: [ !Ref EC2SecurityGroupId ]
-          AssignPublicIp: ENABLED       # public IP in public subnets
-
       DeploymentConfiguration:
-        MaximumPercent:        200
+        DeploymentCircuitBreaker:
+          Enable: false  # prevent premature task stop if app takes time
+          Rollback: false
+        MaximumPercent: 200
         MinimumHealthyPercent: 50
       EnableECSManagedTags: true
       PropagateTags: SERVICE
 
-###############################################################
-# Outputs
-###############################################################
 Outputs:
-  ServiceName:
+  ECSServiceName:
     Description: Name of the ECS Service
-    Value: !GetAtt ECSService.Name
-    Export: { Name: !Sub "${AWS::StackName}-ServiceName" }
-
-  ServiceArn:
-    Description: ARN of the ECS Service
     Value: !Ref ECSService
-    Export: { Name: !Sub "${AWS::StackName}-ServiceArn" }
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceName"
+
+  ECSServiceArn:
+    Description: ARN of the ECS Service
+    Value: !GetAtt ECSService.Arn
+    Export:
+      Name: !Sub "${AWS::StackName}-ServiceArn"
