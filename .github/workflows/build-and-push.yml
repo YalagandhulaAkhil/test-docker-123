@@ -1,71 +1,71 @@
 name: Build & Push Docker Image to ECR
-
+# ────────────────────────────────────────────────────────────────
 on:
   push:
-    branches: [ main ]             # adjust branch(es) as needed
+    branches: [ main ]                # adjust if you use a different branch
     paths:
-      - '**/*.py'                  # or your app source files
       - 'Dockerfile'
+      - '**/*.py'                     # your source code – tweak as needed
       - '.github/workflows/build-and-push.yml'
   workflow_dispatch:
-
+# ────────────────────────────────────────────────────────────────
 permissions:
-  id-token: write   # OIDC to assume role
-  contents: read
-
+  id-token: write       # ► OIDC
+  contents:  read
+# ────────────────────────────────────────────────────────────────
 env:
-  AWS_REGION:     ${{ secrets.AWS_REGION }}
-  ECR_STACK:      ecr-stack
-  S3_BUCKET_NAME: ${{ secrets.S3_BUCKET_NAME }}
-
+  AWS_REGION:      ${{ secrets.AWS_REGION }}       # e.g. us‑east‑1
+  ECR_STACK:       ecr-stack                       # CFN stack name
+  S3_BUCKET_NAME:  ${{ secrets.S3_BUCKET_NAME }}   # bucket that stores outputs.txt
+# ────────────────────────────────────────────────────────────────
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
+    outputs:
+      image_sha: ${{ steps.push.outputs.sha }}     # downstream workflows can use this
 
     steps:
-    # ─────────────────────────────────────────
-    # 1. Checkout code
-    # ─────────────────────────────────────────
+    # 1. Checkout repo
     - uses: actions/checkout@v4
 
-    # ─────────────────────────────────────────
-    # 2. Configure AWS creds via OIDC
-    # ─────────────────────────────────────────
+    # 2. Configure AWS credentials via OIDC
     - name: Configure AWS credentials
       uses: aws-actions/configure-aws-credentials@v4
       with:
         role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
         aws-region:     ${{ env.AWS_REGION }}
 
-    # ─────────────────────────────────────────
-    # 3. Fetch RepoUri from S3 outputs
-    # ─────────────────────────────────────────
-    - name: Get ECR repo URI
+    # 3. Read RepoUri from ecr‑stack outputs
+    - name: Fetch ECR RepoUri
       id: repo
       run: |
-        aws s3 cp s3://${S3_BUCKET_NAME}/${ECR_STACK}/outputs.txt ecr.txt
-        REPO_URI=$(grep -E '^ *RepoUri *= *' ecr.txt | cut -d '=' -f2 | xargs)
-        echo "REPO_URI=${REPO_URI}" >> $GITHUB_ENV
+        set -euo pipefail
+        aws s3 cp "s3://${S3_BUCKET_NAME}/${ECR_STACK}/outputs.txt" repo.txt
+        REPO_URI=$(grep -E '^ *RepoUri *= *' repo.txt | cut -d '=' -f2 | xargs)
+        if [[ -z "$REPO_URI" ]]; then
+          echo "::error ::RepoUri not found in S3 outputs – has ecr‑stack run?" >&2
+          exit 1
+        fi
+        echo "REPO_URI=${REPO_URI}" >> "$GITHUB_ENV"
+        echo "::notice ::Using ECR repo $REPO_URI"
 
-    # ─────────────────────────────────────────
-    # 4. Login to ECR
-    # ─────────────────────────────────────────
-    - name: Login to Amazon ECR
+    # 4. Log in to Amazon ECR
+    - name: Login to Amazon ECR
       uses: aws-actions/amazon-ecr-login@v2
 
-    # ─────────────────────────────────────────
-    # 5. Build & push
-    # ─────────────────────────────────────────
-    - name: Build, tag, and push image
-      env:
-        REPO: ${{ env.REPO_URI }}
+    # 5. Build & push image
+    - name: Build, tag & push
+      id: push
       run: |
         set -e
         SHA=$(git rev-parse --short HEAD)
-        docker build -t $REPO:latest -t $REPO:$SHA .
-        docker push $REPO:latest
-        docker push $REPO:$SHA
+        echo "🔨  Building image…"
+        docker build -t "$REPO_URI:latest" -t "$REPO_URI:$SHA" .
+        echo "📤  Pushing tags…"
+        docker push "$REPO_URI:latest"
+        docker push "$REPO_URI:$SHA"
+        echo "sha=$SHA" >> "$GITHUB_OUTPUT"
 
-    # Optional – surface resulting image tag
-    - name: Output pushed image tag
-      run: echo "✅ Pushed $REPO_URI:latest and :$SHA"
+    # 6. Summary
+    - name: Show result
+      run: echo "✅  Pushed $REPO_URI:latest and :${{ steps.push.outputs.sha }}"
