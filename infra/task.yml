@@ -25,7 +25,7 @@ Resources:
       Family: !Sub "${ClusterName}-task"
       RequiresCompatibilities: [EC2]
       NetworkMode: awsvpc
-      Cpu:    "1024"     # 1 vCPU
+      Cpu:    "512"     # 0.5 vCPU
       Memory: "1024"     # 1 GiB
       ExecutionRoleArn: !Ref ECSExecutionRoleArn
       TaskRoleArn:      !Ref ECSTaskRoleArn
@@ -33,7 +33,7 @@ Resources:
         - Name: html-site
           Image: !Ref ImageUri
           Essential: true
-          Cpu: 1024
+          Cpu: 512
           Memory: 1024
           PortMappings:
             - ContainerPort: 8080
