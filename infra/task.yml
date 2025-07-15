@@ -1,56 +1,63 @@
+# infra/task.yml
 AWSTemplateFormatVersion: "2010-09-09"
-Description: "Register ECS task definition only (no service created)"
+Description: ECS Fargate Task Definition for hello‑web container
 
-########################################
-# PARAMETERS (supplied by deploy-task.yml)
-########################################
 Parameters:
-  ClusterName:
+  TaskFamily:
     Type: String
-  ImageUri:
-    Type: String
-  ECSExecutionRoleArn:
-    Type: String
-  ECSTaskRoleArn:
-    Type: String
+    Default: hello-web
+    Description: Task definition family name
 
-########################################
-# RESOURCES
-########################################
+  ContainerImage:
+    Type: String                      # ← passed from workflow; default here as fallback
+    Default: 590183820639.dkr.ecr.<region>.amazonaws.com/test-docker-123:latest
+
+  ExecutionRoleArn:
+    Type: String                      # ← ECSTaskExecutionRole
+    Description: IAM role the agent uses to pull image & send logs
+
+  TaskRoleArn:
+    Type: String                      # ← Your app role (can be same as exec if minimal)
+    Description: IAM role that the running container will assume
+
+  ContainerPort:
+    Type: Number
+    Default: 80
+    Description: Port exposed by the container
+
 Resources:
-
-  TaskDef:
+  FargateTaskDef:
     Type: AWS::ECS::TaskDefinition
     Properties:
-      Family: !Sub "${ClusterName}-task"
-      RequiresCompatibilities: [EC2]
+      Family: !Ref TaskFamily
+      Cpu: "256"                      # 0.25 vCPU  (smallest Fargate size)
+      Memory: "512"                   # 0.5 GiB
+      RequiresCompatibilities: [FARGATE]
       NetworkMode: awsvpc
-      Cpu:    "512"     # 0.5 vCPU
-      Memory: "1024"     # 1 GiB
-      ExecutionRoleArn: !Ref ECSExecutionRoleArn
-      TaskRoleArn:      !Ref ECSTaskRoleArn
+      ExecutionRoleArn: !Ref ExecutionRoleArn
+      TaskRoleArn:      !Ref TaskRoleArn
       ContainerDefinitions:
-        - Name: html-site
-          Image: !Ref ImageUri
-          Essential: true
-          Cpu: 512
-          Memory: 1024
+        - Name: web
+          Image: !Ref ContainerImage
           PortMappings:
-            - ContainerPort: 8080
-              Protocol: tcp
+            - ContainerPort: !Ref ContainerPort
+          Essential: true
           LogConfiguration:
             LogDriver: awslogs
             Options:
-              awslogs-group:  !Sub "/ecs/${ClusterName}"
+              awslogs-group: !Sub "/ecs/${TaskFamily}"
               awslogs-region: !Ref "AWS::Region"
-              awslogs-stream-prefix: site
+              awslogs-stream-prefix: ecs
 
-########################################
-# OUTPUTS
-########################################
 Outputs:
-  TaskDefArn:
-    Description: ARN of the registered task definition
-    Value: !Ref TaskDef
+  TaskDefinitionArn:
+    Description: ARN of the newly registered task definition
+    Value: !Ref FargateTaskDef
     Export:
-      Name: !Sub "${AWS::StackName}-TaskDefArn"
+      Name: !Sub "${AWS::StackName}-TaskDefinitionArn"
+
+  TaskFamily:
+    Description: Task family
+    Value: !Ref TaskFamily
+    Export:
+      Name: !Sub "${AWS::StackName}-TaskFamily"
