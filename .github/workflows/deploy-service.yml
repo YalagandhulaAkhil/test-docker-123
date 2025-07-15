@@ -1,0 +1,91 @@
+name: Deploy ECS Fargate Service
+
+on:
+  push:
+    paths:
+      - "infra/service.yml"
+      - ".github/workflows/deploy-service.yml"
+      - "scripts/read-s3-outputs.sh"
+      - "scripts/save-outputs.sh"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:           ${{ secrets.AWS_REGION }}
+  STACK_NAME:           ecs-service-stack
+  TASK_STACK:           ecs-task-stack
+  CLUSTER_STACK:        ecs-cluster-stack
+  VPC_STACK:            my-vpc-stack
+  S3_BUCKET_NAME:       ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  deploy-service:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️⃣ Checkout source code
+      - uses: actions/checkout@v4
+
+      # 2️⃣ Configure AWS credentials via OIDC
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region:     ${{ env.AWS_REGION }}
+
+      # 3️⃣ Validate upstream stack outputs exist
+      - name: Read outputs from VPC, ECS, Task stacks
+        run: |
+          set -euo pipefail
+          chmod +x scripts/read-s3-outputs.sh
+
+          CLUSTER_NAME=$(scripts/read-s3-outputs.sh "${CLUSTER_STACK}" ECSClusterName)
+          TASK_DEF_ARN=$(scripts/read-s3-outputs.sh "${TASK_STACK}" TaskDefinitionArn)
+          SG_ID=$(scripts/read-s3-outputs.sh "${CLUSTER_STACK}" ECSSecurityGroupId)
+          SUB1=$(scripts/read-s3-outputs.sh "${VPC_STACK}" PublicSubnet1Id)
+          SUB2=$(scripts/read-s3-outputs.sh "${VPC_STACK}" PublicSubnet2Id)
+          VPC_ID=$(scripts/read-s3-outputs.sh "${VPC_STACK}" VpcId)
+
+          if [[ -z "$CLUSTER_NAME" || -z "$TASK_DEF_ARN" || -z "$SG_ID" || -z "$SUB1" || -z "$SUB2" || -z "$VPC_ID" ]]; then
+            echo "❌ One or more outputs are missing. Check upstream stack deployments."
+            exit 1
+          fi
+
+          echo "✅ All required outputs resolved."
+          echo "CLUSTER_NAME=$CLUSTER_NAME"
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN"
+
+          echo "CLUSTER_NAME=$CLUSTER_NAME"   >> $GITHUB_ENV
+          echo "TASK_DEF_ARN=$TASK_DEF_ARN"   >> $GITHUB_ENV
+          echo "SG_ID=$SG_ID"                 >> $GITHUB_ENV
+          echo "SUB1=$SUB1"                   >> $GITHUB_ENV
+          echo "SUB2=$SUB2"                   >> $GITHUB_ENV
+          echo "VPC_ID=$VPC_ID"               >> $GITHUB_ENV
+
+      # 4️⃣ Deploy or update the ECS service stack
+      - name: Deploy ECS Fargate Service Stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name ${STACK_NAME} \
+            --template-file infra/service.yml \
+            --parameter-overrides DesiredCount=1 \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset
+
+      # 5️⃣ Save service outputs to S3
+      - name: Save outputs to S3
+        run: |
+          chmod +x scripts/save-outputs.sh
+          S3_BUCKET_NAME=${{ env.S3_BUCKET_NAME }} \
+          ./scripts/save-outputs.sh ${STACK_NAME}
+
+      # 6️⃣ Upload outputs as artifact
+      - name: Upload service outputs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ecs-service-outputs
+          path: infra/outputs.txt
+          if-no-files-found: error

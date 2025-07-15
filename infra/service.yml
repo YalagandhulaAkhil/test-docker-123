@@ -1,68 +1,91 @@
 AWSTemplateFormatVersion: "2010-09-09"
-Description: ECS Service with EC2 launch type and managed network configuration
+Description: ECS Fargate Service for hello‑web task
 
 Parameters:
-  ClusterName:
-    Type: String
-    Description: Name of the ECS Cluster
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: How many tasks to run
 
   ServiceName:
     Type: String
-    Default: html-ecs-service
-    Description: Name of the ECS Service
-
-  TaskDefinitionArn:
-    Type: String
-    Description: ARN of the ECS Task Definition
-
-  SubnetIds:
-    Type: List<AWS::EC2::Subnet::Id>
-    Description: List of subnet IDs for the ECS service
-
-  SecurityGroupId:
-    Type: AWS::EC2::SecurityGroup::Id
-    Description: Security Group ID to associate with the ECS tasks
-
-  CapacityProviderName:
-    Type: String
-    Description: Name of the capacity provider associated with the ECS cluster
+    Default: hello-web-svc
+    Description: ECS service name
 
 Resources:
   ECSService:
     Type: AWS::ECS::Service
+    DependsOn: ListenerRule                # ensures SG is ready before service starts
     Properties:
-      Cluster: !Ref ClusterName
       ServiceName: !Ref ServiceName
-      TaskDefinition: !Ref TaskDefinitionArn
-      DesiredCount: 1
-      LaunchType: EC2
+      Cluster:      !ImportValue ecs-cluster-stack-ECSClusterName
+      TaskDefinition: !ImportValue ecs-task-stack-TaskDefinitionArn
+      DesiredCount: !Ref DesiredCount
+      LaunchType: FARGATE
       NetworkConfiguration:
         AwsvpcConfiguration:
           AssignPublicIp: ENABLED
-          Subnets: !Ref SubnetIds
           SecurityGroups:
-            - !Ref SecurityGroupId
-      CapacityProviderStrategy:
-        - CapacityProvider: !Ref CapacityProviderName
-          Weight: 1
+            - !ImportValue ecs-cluster-stack-ECSSecurityGroupId
+          Subnets:
+            - !ImportValue my-vpc-stack-PublicSubnet1Id
+            - !ImportValue my-vpc-stack-PublicSubnet2Id
       DeploymentConfiguration:
-        DeploymentCircuitBreaker:
-          Enable: false  # prevent premature task stop if app takes time
-          Rollback: false
         MaximumPercent: 200
         MinimumHealthyPercent: 50
-      EnableECSManagedTags: true
-      PropagateTags: SERVICE
+
+  # (optional) Application Load Balancer pieces for HTTP access
+  LoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Properties:
+      Name: !Sub "${ServiceName}-alb"
+      Scheme: internet-facing
+      Subnets:
+        - !ImportValue my-vpc-stack-PublicSubnet1Id
+        - !ImportValue my-vpc-stack-PublicSubnet2Id
+      SecurityGroups:
+        - !ImportValue ecs-cluster-stack-ECSSecurityGroupId
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    Properties:
+      Port: 80
+      Protocol: HTTP
+      VpcId: !ImportValue my-vpc-stack-VpcId
+      TargetType: ip
+      HealthCheckPath: /
+      Matcher: { HttpCode: "200" }
+
+  Listener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+    Properties:
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: HTTP
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+
+  ListenerRule:
+    Type: AWS::ElasticLoadBalancingV2::ListenerRule
+    Properties:
+      ListenerArn: !Ref Listener
+      Priority: 1
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref TargetGroup
+      Conditions:
+        - Field: path-pattern
+          Values: ["/*"]
 
 Outputs:
-  ECSServiceName:
-    Description: Name of the ECS Service
+  ServiceName:
     Value: !Ref ECSService
     Export:
       Name: !Sub "${AWS::StackName}-ServiceName"
 
-  ECSServiceArn:
-    Description: ARN of the ECS Service
-    Value: !GetAtt ECSService.Arn
+  LoadBalancerDNS:
+    Description: ALB DNS name
+    Value: !GetAtt LoadBalancer.DNSName
     Export:
-      Name: !Sub "${AWS::StackName}-ServiceArn"
+      Name: !Sub "${AWS::StackName}-LoadBalancerDNS"
